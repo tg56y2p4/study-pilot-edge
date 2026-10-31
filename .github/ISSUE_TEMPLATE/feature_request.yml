@@ -1,0 +1,16 @@
+name: 功能建议
+description: 提出具体使用场景与期望行为
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 描述实际问题，不要附账号、Key或私有课程内容。
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望行为
+    validations:
+      required: true

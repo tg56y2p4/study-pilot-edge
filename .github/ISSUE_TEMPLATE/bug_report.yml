@@ -1,0 +1,38 @@
+name: 功能问题
+description: 反馈接入、播放、识题或章节导航问题
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交 API Key、Cookie、账号密码、带签名的课程链接或未脱敏截图。
+  - type: input
+    id: version
+    attributes:
+      label: 插件与浏览器版本
+      placeholder: 例如 v0.6.0，Edge 版本号
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 出现问题的位置
+      options:
+        - 设置 / 模型服务
+        - 学习通
+        - 中国大学MOOC
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤与实际结果
+      description: 可提供去掉查询参数的页面路径；请勿粘贴完整课程链接。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true

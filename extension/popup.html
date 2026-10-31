@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>课伴 · 课程助手</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="popup">
+    <header class="header">
+      <div class="brand">
+        <div class="brandmark" aria-hidden="true">伴</div>
+        <div>
+          <h1>课伴</h1>
+          <p class="eyebrow">学习通 / MOOC 助手</p>
+        </div>
+      </div>
+      <button id="settings">设置</button>
+    </header>
+    <div id="status" class="statusbar" role="status">
+      <strong id="statusTitle">正在连接</strong>
+      <p id="statusDetail">读取当前课程状态…</p>
+    </div>
+    <div class="actions">
+      <button id="start" class="primary">开始托管</button><button id="stop">停止</button>
+    </div>
+    <p id="message" class="message" role="status"></p>
+    <div class="stats">
+      <div><b id="videos">0</b><span>已结束 / 识别视频</span></div>
+      <div><b id="calls">0</b><span>本轮 API 请求</span></div>
+      <div><b id="tokens">0</b><span>本轮 Tokens</span></div>
+    </div>
+    <div class="actions">
+      <button id="scan">解析本页题目</button><button id="fill">填写已解析答案</button>
+    </div>
+    <div class="sectiontitle">
+      <h2>最近解析</h2>
+      <span id="confidence" class="subtle"></span>
+    </div>
+    <div id="result" class="result" hidden>
+      <h3 id="question"></h3>
+      <div id="answer" class="answer"></div>
+      <p id="explanation" class="explanation"></p>
+    </div>
+    <p id="noResult" class="empty">解析完成后，在这里查看答案与推导过程。</p>
+    <div class="sectiontitle">
+      <h2>运行记录</h2>
+      <span class="subtle">当前标签页</span>
+    </div>
+    <ul id="logs" class="log"></ul>
+    <footer>自选模型 · 图文解题与课程控制<br />0.6.0 · 支持学习通与中国大学MOOC</footer>
+    <script type="module" src="popup.mjs"></script>
+  </body>
+</html>

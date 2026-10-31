@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "课伴 · 学习通与MOOC助手",
+  "version": "0.6.0",
+  "description": "学习通与中国大学MOOC课程助手：我的课程定位、音视频播放、图文解题、提交确认及单元切换。",
+  "permissions": ["storage", "activeTab", "scripting", "debugger"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "host_permissions": [
+    "https://*.chaoxing.com/*",
+    "http://*.chaoxing.com/*",
+    "https://*.icourse163.org/*",
+    "http://*.icourse163.org/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://dashscope-intl.aliyuncs.com/*",
+    "https://dashscope-us.aliyuncs.com/*",
+    "https://maas.qianwenaiapi.com/*",
+    "https://*.maas.aliyuncs.com/*"
+  ],
+  "background": { "service_worker": "background.mjs", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "课伴 · 课程助手" },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://*.chaoxing.com/*", "http://*.chaoxing.com/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.icourse163.org/*", "http://*.icourse163.org/*"],
+      "js": ["mooc-adapter.js", "content.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

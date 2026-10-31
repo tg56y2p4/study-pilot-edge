@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>课伴设置 · 连接你的AI</title>
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="settings-page">
+      <header class="header">
+        <div class="brand">
+          <div class="brandmark" aria-hidden="true">伴</div>
+          <div>
+            <h1>连接你自己的 AI</h1>
+            <p class="eyebrow">课伴设置 · 学习通 / 中国大学MOOC</p>
+          </div>
+        </div>
+        <span id="connectionBadge" class="tag">等待配置</span>
+      </header>
+      <p class="intro">
+        填入服务地址和 Key，读取模型目录，选择你想使用的模型。配置只保存在这个浏览器中。
+      </p>
+      <form id="form">
+        <div class="setup-layout">
+          <div class="setup-main">
+            <fieldset class="setup-step">
+              <legend><span class="step-number">1</span> 连接模型服务</legend>
+              <label class="field"
+                ><span>服务地址预设</span
+                ><select id="region">
+                  <option value="custom">自定义 OpenAI 兼容服务</option>
+                  <option value="beijing">阿里云百炼 · 北京 DashScope</option>
+                  <option value="singapore">阿里云百炼 · 新加坡</option>
+                  <option value="us">阿里云百炼 · 弗吉尼亚 DashScope</option>
+                  <option value="openai">OpenAI API</option>
+                  <option value="qianwen">千问 AI 平台 · qianwenaiapi.com</option>
+                </select></label
+              >
+              <label class="field"
+                ><span>API Host / Base URL</span
+                ><input
+                  id="endpoint"
+                  type="url"
+                  required
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="https://你的服务地址/v1"
+                /><small
+                  >粘贴服务商提供的 OpenAI
+                  兼容地址。只填域名时会补全常用路径；自定义路径会保留。</small
+                ></label
+              >
+              <div class="field">
+                <label for="apiKey"><span>API Key</span></label>
+                <div class="keyrow">
+                  <input
+                    id="apiKey"
+                    type="password"
+                    placeholder="填写这个服务的 API Key"
+                    autocomplete="off"
+                    spellcheck="false"
+                  /><button id="showKey" type="button" aria-pressed="false">显示</button>
+                </div>
+                <small id="keyStatus">尚未设置</small>
+              </div>
+              <label class="check"
+                ><input id="rememberKey" type="checkbox" /><span
+                  ><b>在此浏览器中记住 Key</b
+                  ><small
+                    >默认只在本次浏览器会话保存。勾选后保存在本机扩展存储中，不同步到其他设备；本机存储未加密。</small
+                  ></span
+                ></label
+              >
+              <div class="actions">
+                <button id="fetchModels" type="button" class="primary">拉取模型</button
+                ><button id="clearKey" type="button" class="danger">删除已保存 Key</button>
+              </div>
+              <p id="modelMessage" class="message" role="status">
+                从你填写的服务读取可用模型，不会保存尚未提交的配置。
+              </p>
+            </fieldset>
+            <fieldset class="setup-step">
+              <legend><span class="step-number">2</span> 选择使用的模型</legend>
+              <label class="field"
+                ><span>搜索模型目录</span
+                ><input
+                  id="modelSearch"
+                  type="search"
+                  placeholder="输入模型名称或 ID"
+                  autocomplete="off"
+                /><small id="catalogStatus">尚未读取模型目录，也可以直接填写模型 ID。</small></label
+              >
+              <label class="field"
+                ><span>文字解题模型</span
+                ><select id="modelSelect">
+                  <option value="">请先拉取模型，或在下方手动填写</option></select
+                ><input
+                  id="model"
+                  class="model-id"
+                  type="text"
+                  maxlength="200"
+                  placeholder="模型 ID，也可手动填写"
+                  autocomplete="off"
+                  spellcheck="false"
+                /><small
+                  >用于读题、解题与生成解析。目录存在不代表账号已开通调用权限，请完成连接测试。</small
+                ></label
+              >
+              <label class="check"
+                ><input id="sameModel" type="checkbox" checked /><span
+                  ><b>图片识题也使用这个模型</b
+                  ><small>需要所选模型支持图片输入；也可以单独选择图片模型。</small></span
+                ></label
+              >
+              <label class="field"
+                ><span>图片识题与视觉操作模型</span
+                ><select id="visionModelSelect">
+                  <option value="">请先拉取模型，或在下方手动填写</option></select
+                ><input
+                  id="visionModel"
+                  class="model-id"
+                  type="text"
+                  maxlength="200"
+                  placeholder="支持图片输入的模型 ID"
+                  autocomplete="off"
+                  spellcheck="false"
+                /><small id="visionHint"
+                  >模型目录未声明图片能力时，以图片识别测试为准。</small
+                ></label
+              >
+            </fieldset>
+            <fieldset class="setup-step">
+              <legend><span class="step-number">3</span> 测试并保存</legend>
+              <p class="step-description">
+                先检查文字输出，再确认图片识别。测试会调用所选模型，费用由你的 API 账户承担。
+              </p>
+              <div class="actions connection">
+                <button id="test" type="button">保存并测试文字连接</button
+                ><button id="testVision" type="button">保存并测试图片识别</button>
+              </div>
+              <p id="connectionMessage" class="message" role="status"></p>
+              <button type="submit" class="primary">保存并用于课程</button>
+            </fieldset>
+          </div>
+          <aside class="connection-summary" aria-label="当前配置摘要">
+            <div class="summary-heading">你的学习助手</div>
+            <p>模型由你选择，课程由课伴接续。</p>
+            <dl>
+              <dt>服务地址</dt>
+              <dd id="summaryHost">尚未填写</dd>
+              <dt>文字模型</dt>
+              <dd id="summaryModel">尚未选择</dd>
+              <dt>图片模型</dt>
+              <dd id="summaryVision">尚未选择</dd>
+              <dt>模型目录</dt>
+              <dd id="summaryCatalog">等待拉取</dd>
+            </dl>
+            <div class="summary-note">
+              保存后，打开学习通课程或 MOOC“我的课程”，从工具栏开始托管。
+            </div>
+            <div class="help">
+              请求直接发往你选择的服务。解题可能发送题目及截图；视觉操作可能发送当前课程页的可见信息。插件不读取密码或
+              Cookie。
+            </div>
+          </aside>
+        </div>
+        <div class="behavior-heading">
+          <h2>课程与托管设置</h2>
+          <p>沿用常用行为，需要时再调整。</p>
+        </div>
+        <fieldset>
+          <legend>视频与章节</legend>
+          <label class="check"
+            ><input id="autoPlay" type="checkbox" /><span
+              ><b>自动播放并续播页面音视频</b
+              ><small>按正常速度播放，遇到浏览器播放限制时在课程面板提示。</small></span
+            ></label
+          >
+          <label class="check"
+            ><input id="muted" type="checkbox" /><span><b>静音播放</b></span></label
+          >
+          <label class="check"
+            ><input id="keepActive" type="checkbox" /><span
+              ><b>托管时保持课程标签激活</b
+              ><small
+                >避免切换到同一窗口的其他标签后，课程播放器被平台暂停。不会把其他应用窗口强制切到前台。</small
+              ></span
+            ></label
+          >
+          <label class="check"
+            ><input id="autoNext" type="checkbox" /><span
+              ><b>自动处理本章任务并进入下一节</b
+              ><small
+                >先确认当前任务完成，再切换音视频、测验等任务标签；换章后重新识别。点击未生效时重试并尝试课程目录。</small
+              ></span
+            ></label
+          >
+          <label class="check"
+            ><input id="autoRead" type="checkbox" /><span
+              ><b>自动打开专题阅读并翻页</b
+              ><small
+                >按阅读器的正常控件翻页、滚动；资源失效时尝试其他专题，不能确认完成时停止并说明原因。</small
+              ></span
+            ></label
+          >
+        </fieldset>
+        <fieldset>
+          <legend>题目与解析</legend>
+          <label class="check"
+            ><input id="autoSolve" type="checkbox" /><span
+              ><b>自动识别并解析题目</b
+              ><small
+                >支持单选、多选、判断、普通填空、简答，以及带图片、公式、图表的题目。</small
+              ></span
+            ></label
+          >
+          <label class="check"
+            ><input id="useVision" type="checkbox" /><span
+              ><b>自动截图识别图片题</b
+              ><small
+                >完整截取题目区域后调用视觉模型；截图期间 Edge 会短暂显示调试提示。</small
+              ></span
+            ></label
+          >
+          <label class="check"
+            ><input id="autoFill" type="checkbox" /><span
+              ><b>自动填写达到阈值的答案</b
+              ><small>保留已作答内容。模型自评仅用于筛选，不能保证答案正确。</small></span
+            ></label
+          >
+          <label class="check"
+            ><input id="autoSubmit" type="checkbox" /><span
+              ><b>自动提交章节练习</b
+              ><small
+                >所有题目均有达到阈值的模型答案并已填写后提交；以页面明确的提交成功提示为准。</small
+              ></span
+            ></label
+          >
+          <label class="check"
+            ><input id="autoConfirm" type="checkbox" /><span
+              ><b>自动确认章节练习提交弹窗</b
+              ><small>仅处理本轮提交后出现、明确涉及提交的确认框；验证码和考试仍停止。</small></span
+            ></label
+          >
+          <div class="fieldrow">
+            <label class="field"
+              ><span>自动填写阈值</span
+              ><select id="minConfidence">
+                <option value="0.8">80%</option>
+                <option value="0.9">90%（默认）</option>
+                <option value="0.95">95%</option>
+                <option value="1">100%</option>
+              </select></label
+            ><label class="field"
+              ><span>每轮 API 请求上限</span
+              ><input id="maxCalls" type="number" min="1" max="300" required /><small
+                >同一题优先使用缓存；重新开始托管会开启新一轮计数。</small
+              ></label
+            >
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>视觉操作</legend>
+          <label class="check"
+            ><input id="visualAgent" type="checkbox" /><span
+              ><b>使用视觉模型定位课程列表与入口</b
+              ><small
+                >根据页面截图和控件点击课程、搜索或滚动。进入课程后由任务控制器处理播放、解题、提交和换章，避免两套控制同时操作。</small
+              ></span
+            ></label
+          >
+          <label class="field"
+            ><span>课程名称（可选）</span
+            ><input id="courseName" type="text" maxlength="200" autocomplete="off" /><small
+              >填写后用于课程列表定位；留空表示继续已打开的课程，多门课程无法确定时会停止。</small
+            ></label
+          >
+          <label class="field"
+            ><span>中国大学MOOC课程名称（可选）</span
+            ><input id="moocCourseName" type="text" maxlength="200" autocomplete="off" /><small
+              >从“个人中心 →
+              我的课程”定位此课程。留空时，只有一门课程会直接进入，多门课程可在右下角课伴面板选择。</small
+            ></label
+          >
+          <div class="fieldrow">
+            <label class="field"
+              ><span>每轮视觉操作上限</span
+              ><input id="maxActions" type="number" min="1" max="300" required /></label
+            ><label class="field"
+              ><span>视觉检查间隔（毫秒）</span
+              ><input id="agentInterval" type="number" min="8000" max="60000" step="1000" required
+            /></label>
+          </div>
+        </fieldset>
+        <details>
+          <summary>页面适配与高级设置</summary>
+          <label class="check"
+            ><input id="jsonMode" type="checkbox" /><span
+              ><b>请求服务使用 JSON 格式输出</b
+              ><small
+                >默认开启。部分兼容服务不接受这个参数，可关闭后重新测试；模型仍需按提示返回 JSON
+                答案。</small
+              ></span
+            ></label
+          >
+          <label class="field"
+            ><span>题目容器选择器</span
+            ><textarea id="questionSelector" spellcheck="false"></textarea
+            ><small>实际课程无法识别时，可根据页面结构调整 CSS 选择器。</small></label
+          >
+          <label class="field"
+            ><span>下一章节按钮选择器</span
+            ><textarea id="nextSelector" spellcheck="false"></textarea>
+          </label>
+          <label class="field"
+            ><span>请求最小间隔（毫秒）</span
+            ><input id="requestGap" type="number" min="2000" max="30000" step="100" required
+          /></label>
+          <label class="field"
+            ><span>阅读翻页间隔（毫秒）</span
+            ><input
+              id="readingInterval"
+              type="number"
+              min="1000"
+              max="60000"
+              step="1000"
+              required
+            /><small
+              >默认每次翻页或滚动至少间隔 15 秒；平台要求的阅读时长仍以课程实际记录为准。</small
+            ></label
+          >
+          <button id="reset" type="button">恢复默认行为设置</button>
+        </details>
+        <div class="settings-actions">
+          <button type="submit" class="primary">保存设置</button>
+          <p id="message" class="message" role="status"></p>
+        </div>
+      </form>
+    </main>
+    <script type="module" src="options.mjs"></script>
+  </body>
+</html>

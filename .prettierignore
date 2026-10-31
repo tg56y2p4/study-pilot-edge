@@ -1,0 +1,8 @@
+node_modules/
+dist/
+test-results/
+.test-profiles/
+.planning/
+.local-tools/
+docs/v0.4使用说明.md
+*.zip

@@ -2,7 +2,9 @@
 
 ## 发布内容
 
-`npm run build` 在 `dist/` 输出安装 ZIP、源码 ZIP 和 `SHA256SUMS.txt`。构建要求当前源码的完整离线检查通过。ZIP 条目使用固定时间、排序与文件权限；相同源码和检查摘要生成相同字节。
+`npm run build` 在 `dist/` 输出安装 ZIP、源码 ZIP 和 `SHA256SUMS.txt`。构建要求当前源码的完整离线检查通过。ZIP 条目使用固定时间、排序与文件权限；相同源码、检查摘要和 Python/zlib 构建环境生成相同字节。
+
+不同系统或压缩库版本可能生成不同的 ZIP 压缩字节。已验证 Windows 与 Linux 构建的解压内容逐文件一致，但两份 ZIP 的校验值并不一定相同。校验时使用对应下载产物附带的 `SHA256SUMS.txt`，不要混用不同构建的校验文件。
 
 源码包使用公开文件白名单，不依赖开发电脑的整个目录。也可执行 `python tools/export_source.py` 仅导出待审阅源码。
 

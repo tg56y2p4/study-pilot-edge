@@ -40,4 +40,4 @@ git push origin v0.7.0
 
 不要直接上传开发目录或 `test-results/`。真实 API 调用和私人课程现场记录不属于发行材料。
 
-目前许可证尚未选定；确定后再添加 `LICENSE` 并更新 README。不要把“公开仓库”描述为已经授予某个开源许可证。
+仓库使用 MIT 许可证，根目录的 `LICENSE` 会随安装包和源码包一并发布。修改许可证前，需同时更新 `LICENSE`、`package.json` 的 `license` 字段、README 和本说明。

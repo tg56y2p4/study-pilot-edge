@@ -2,7 +2,7 @@
 
 面向 Microsoft Edge 的课程学习助手，支持**学习通**和**中国大学 MOOC**。你接入自己的 OpenAI 兼容模型服务，课伴帮你完成音视频续播、课件浏览、图文题解析和章节导航。
 
-> **当前版本：v0.7.0** · 扩展本身没有 npm/Python 运行时依赖 · 首次安装不含任何 Key、账号、模型或课程目标。
+> **当前版本：v0.7.1** · 扩展本身没有 npm/Python 运行时依赖 · 首次安装不含任何 Key、账号、模型或课程目标。
 
 ## 目录
 
@@ -28,7 +28,7 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/tg56y2p4/study-pilot-edge/releases) 下载 `study-pilot-edge-v0.7.0.zip` 并解压。
+1. 从 [Releases](https://github.com/tg56y2p4/study-pilot-edge/releases) 下载 `study-pilot-edge-v0.7.1.zip` 并解压。
 2. 在 Edge 打开 `edge://extensions`，开启“开发人员模式”。
 3. 点击“加载解压缩的扩展”，选择**直接包含 `manifest.json` 的文件夹**。使用仓库源码时选择 `extension/`。
 4. 打开课伴设置，完成[模型配置](#配置模型)。
@@ -129,4 +129,4 @@ npm run build
 
 反馈问题时请提供插件版本、浏览器版本、复现步骤和不含敏感信息的截图，不要提交 Key、Cookie、密码或带签名的课程链接。参阅 [参与开发](CONTRIBUTING.md) 与 [安全反馈](SECURITY.md)。
 
-**许可证尚未选定。** 仓库公开源码，但目前没有声明 MIT、GPL 等开源复用授权。
+本项目以 [MIT 许可证](LICENSE) 开源：你可以自由使用、修改和分发，但需保留版权与许可声明；软件按“现状”提供，不附带任何担保。

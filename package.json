@@ -1,7 +1,8 @@
 {
   "name": "study-pilot-edge",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
+  "license": "MIT",
   "description": "Edge course assistant with configurable OpenAI-compatible text and vision models",
   "engines": {
     "node": ">=22"

@@ -92,7 +92,7 @@ def release_notes(metadata, checks=None, checks_url=None):
         if not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+', checks_url):
             raise ValueError('Unexpected checks URL')
         text += f'[本次 GitHub Actions]({checks_url})。\n\n'
-    text += '许可证尚未选定。验证码、考试、独立完成声明和课程讨论由本人按课程要求处理。\n'
+    text += '本项目使用 MIT 许可证。验证码、考试、独立完成声明和课程讨论由本人按课程要求处理。\n'
     return text
 
 

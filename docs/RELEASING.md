@@ -10,15 +10,33 @@
 
 ## 发布前
 
-1. 更新 `extension/manifest.json`、`package.json` 和弹窗中的版本。
+1. 更新 `extension/manifest.json`、`package.json`、`package-lock.json`（含根包）和弹窗中的版本，并同步 README。版本采用三段数字，例如 `0.7.0`。
 2. 更新 `CHANGELOG.md`。
 3. 运行开发文档中的完整检查。
 4. 用独立浏览器从安装 ZIP 加载扩展，确认首次配置为空。
-5. 核对源码包清单与 SHA-256。
+5. 执行 `python tools/prepare_release.py --tag v0.7.0 --artifacts dist --output .release-notes.md`，核对源码包清单、包内文件、检查摘要与 SHA-256。将示例版本换成实际版本。
 
 ## GitHub
 
-推送到 `main`、创建 `v*` 标签或手动触发时，GitHub Actions 会运行离线检查并上传构建产物。CI 默认只读权限，不自动发布 Release；维护者审阅通过后再创建 Release 并附上安装包、源码包和校验文件。
+推送到 `main`、创建 `v*` 标签或手动触发时，GitHub Actions 会运行离线检查并上传构建产物。普通提交与 PR 的检查只有只读权限。
+
+正式发布时先提交源码和文档，确认 `main` 检查通过，再推送与源码版本一致的标签：
+
+```sh
+git push origin main
+git tag -a v0.7.0 -m "Release v0.7.0"
+git push origin v0.7.0
+```
+
+标签会重新运行完整检查。通过后，独立的发布任务取得本次构建产物，重新核对版本、公开文件清单、检查摘要和校验和，从 `CHANGELOG.md` 的当前版本生成说明，以草稿方式上传三个附件，最后公开 Release。发布任务使用 GitHub 自动提供的令牌，不需要维护者额外保存 PAT、模型 Key 或课程账号。只有此任务具备 `contents: write` 权限。
+
+如果检查失败，修复后使用新的版本标签；不要移动已经公开发布的标签。上传中断时，可以重新运行标签工作流以补全尚未公开的草稿。工作流遇到已公开 Release 时保留历史附件，不用 `--clobber` 覆盖公开文件。
+
+安装附件名称为 `study-pilot-edge-v版本号.zip`，源码附件为 `study-pilot-edge-source-v版本号.zip`，第三个文件为 `SHA256SUMS.txt`。GitHub 另外提供的 “Source code (zip/tar.gz)” 由平台自动生成，不是扩展安装目录。
+
+可用 `Get-FileHash 文件名.zip -Algorithm SHA256`（PowerShell）或 `sha256sum -c SHA256SUMS.txt`（Linux）核对同次发布的文件。
+
+参考：[GitHub 工作流产物](https://docs.github.com/en/actions/tutorials/store-and-share-data)、[GitHub CLI 发布命令](https://cli.github.com/manual/gh_release_create)。
 
 不要直接上传开发目录或 `test-results/`。真实 API 调用和私人课程现场记录不属于发行材料。
 

@@ -32,3 +32,5 @@ Thumbs.db
 !/tools/check_syntax.py
 !/tools/export_source.py
 !/tools/run_browser_checks.py
+!/tools/prepare_release.py
+.release-notes.md

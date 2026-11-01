@@ -1,5 +1,6 @@
 """Publication invariants; no network, user credentials or real course files."""
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 from release_lib import EXTENSION_FILES, extension_payload, public_paths, source_fingerprint, write_zip
 from check_repo import audit
+from prepare_release import release_metadata, release_notes, verify_artifacts
 
 
 class ReleaseTests(unittest.TestCase):
@@ -72,6 +74,70 @@ class ReleaseTests(unittest.TestCase):
         for name in payload:
             self.assertFalse(name.endswith(('.env', '.key', '.pfx', '.log')))
         self.assertNotIn('settings.json', payload)
+
+
+class ReleasePreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'source'
+        for name in public_paths(ROOT):
+            destination = self.root / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
+        self.version = release_metadata(self.root)['version']
+        self.folder = Path(self.temp.name) / 'dist'
+
+    def build_fixture(self, extra_source=None, fingerprint=None):
+        _manifest, payload = extension_payload(self.root)
+        counts = {name: 1 for name in ['unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending']}
+        checks = {'source_fingerprint': fingerprint or source_fingerprint(self.root), 'checks': counts, 'total': 6,
+                  'real_api_tested': False, 'real_course_tested': False}
+        payload['CHECKS.json'] = json.dumps(checks).encode('utf-8')
+        install_name = f'study-pilot-edge-v{self.version}.zip'
+        source_name = f'study-pilot-edge-source-v{self.version}.zip'
+        source = {'study-pilot-edge/' + name: (self.root / name).read_bytes() for name in public_paths(self.root)}
+        source.update(extra_source or {})
+        sums = {install_name: write_zip(self.folder / install_name, payload), source_name: write_zip(self.folder / source_name, source)}
+        (self.folder / 'SHA256SUMS.txt').write_text(''.join(f'{digest}  {name}\n' for name, digest in sorted(sums.items())), encoding='utf-8')
+        return checks
+
+    def test_tag_mismatch_cannot_publish(self):
+        with self.assertRaisesRegex(ValueError, 'tag does not match'):
+            release_metadata(self.root, 'v999.0.0')
+
+    def test_stale_lockfile_cannot_publish(self):
+        path = self.root / 'package-lock.json'
+        lock = json.loads(path.read_text(encoding='utf-8'))
+        lock['packages']['']['version'] = '0.0.0'
+        path.write_text(json.dumps(lock), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'versions must match'):
+            release_metadata(self.root)
+
+    def test_valid_archives_and_current_changelog_generate_release_notes(self):
+        checks = self.build_fixture()
+        self.assertEqual(verify_artifacts(self.root, self.folder, self.version), checks)
+        notes = release_notes(release_metadata(self.root), checks)
+        self.assertIn(f'study-pilot-edge-v{self.version}.zip', notes)
+        self.assertNotIn('首个公开发布版', notes)
+        self.assertNotIn('## 0.6.0', notes)
+
+    def test_modified_download_is_rejected_by_checksum(self):
+        self.build_fixture()
+        path = self.folder / f'study-pilot-edge-v{self.version}.zip'
+        path.write_bytes(path.read_bytes() + b'changed')
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            verify_artifacts(self.root, self.folder, self.version)
+
+    def test_private_extra_file_is_rejected_even_with_matching_checksum(self):
+        self.build_fixture(extra_source={'study-pilot-edge/tools/credentials.py': b'not public'})
+        with self.assertRaisesRegex(ValueError, 'current public files'):
+            verify_artifacts(self.root, self.folder, self.version)
+
+    def test_stale_test_summary_is_rejected(self):
+        self.build_fixture(fingerprint='0' * 64)
+        with self.assertRaisesRegex(ValueError, 'summary is missing, stale'):
+            verify_artifacts(self.root, self.folder, self.version)
 
 
 if __name__ == '__main__':

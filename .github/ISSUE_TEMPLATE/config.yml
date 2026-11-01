@@ -1,1 +1,8 @@
 blank_issues_enabled: false
+contact_links:
+  - name: 接入与常见问题
+    url: https://github.com/tg56y2p4/study-pilot-edge/blob/main/docs/TROUBLESHOOTING.md
+    about: 先查看模型连接、播放、刷新恢复与待办处理说明。
+  - name: 私密报告安全漏洞
+    url: https://github.com/tg56y2p4/study-pilot-edge/security/advisories/new
+    about: 涉及凭据或隐私的问题请走私密报告，不要公开粘贴敏感信息。

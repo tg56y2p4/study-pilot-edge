@@ -11,7 +11,7 @@ EXTENSION_FILES = (
 )
 PUBLIC_TOOLS = (
     'check_repo.py', 'check_syntax.py', 'export_source.py', 'package.py',
-    'release_lib.py', 'run_browser_checks.py', 'unit_check.py',
+    'release_lib.py', 'run_browser_checks.py', 'unit_check.py', 'prepare_release.py',
 )
 PUBLIC_TESTS = (
     'api.test.mjs', 'core.test.mjs', 'mooc_tasks.test.mjs', 'browser_check.py',

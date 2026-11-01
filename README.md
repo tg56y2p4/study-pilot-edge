@@ -1,5 +1,8 @@
 # 课伴 · Study Pilot Edge
 
+[![离线检查](https://github.com/tg56y2p4/study-pilot-edge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tg56y2p4/study-pilot-edge/actions/workflows/ci.yml)
+[![最新发布](https://img.shields.io/github/v/release/tg56y2p4/study-pilot-edge)](https://github.com/tg56y2p4/study-pilot-edge/releases/latest)
+
 面向 Microsoft Edge 的课程学习助手，支持学习通与中国大学 MOOC。使用者接入自己的 OpenAI 兼容服务，自选文字和图片模型，进行图文解析、正常音视频续播、课件浏览和章节导航。
 
 **当前版本：v0.7.0**。扩展无运行时 npm/Python 依赖；首次安装没有 Key、账号、模型或课程目标。
@@ -13,6 +16,10 @@
 5. 本人在浏览器登录课程平台，打开课程，从课伴工具栏开始本轮托管。
 
 安装文件夹需保留。更新后重新加载扩展并刷新课程页；有未提交答案时，先在平台保存或处理。
+
+更新已有安装时先停止托管，将新版解压到原安装目录，再到扩展管理页点击“重新加载”，刷新课程标签页。保留同一安装目录可沿用本机设置；重新安装到新目录时扩展 ID 可能变化，需要重新配置。首次使用填写自己的 Key，平台登录仍在本人浏览器完成。
+
+每次正式发布提供安装包、源码包和 `SHA256SUMS.txt`。选择文件名为 `study-pilot-edge-v版本号.zip` 的安装包；GitHub 自动生成的 “Source code” 是仓库源码。Windows 可用 `Get-FileHash .\study-pilot-edge-v0.7.0.zip -Algorithm SHA256` 核对下载页附带的校验值。
 
 ## 自选模型
 
@@ -66,6 +73,8 @@ npm run build
 所有公开自动检查使用模拟 API 和离线课程，不需要真实账号或 Key。构建会核对当前源码对应的完整检查，生成安装包、源码包及 `SHA256SUMS.txt`。源码白名单用于防止把本机资料带入发布包。
 
 [开发说明](docs/DEVELOPMENT.md) · [发布说明](docs/RELEASING.md) · [更新记录](CHANGELOG.md)
+
+维护者更新版本并推送 `v版本号` 标签后，GitHub Actions 会运行完整检查、核对标签与包内版本，并发布带校验文件的 Release。失败的检查会阻止发布，已公开的历史附件不会自动覆盖。
 
 ## 反馈与许可证
 

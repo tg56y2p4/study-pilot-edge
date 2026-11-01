@@ -11,7 +11,7 @@
     "test:unit": "python tools/unit_check.py",
     "test:browser": "python tools/run_browser_checks.py",
     "test:release": "python -m unittest discover -s tests -p \"*_test.py\"",
-    "check": "python tools/check_repo.py && python tools/check_syntax.py && npm run format:check",
+    "check": "python tools/check_repo.py && python tools/check_syntax.py && python tools/prepare_release.py && npm run format:check",
     "format": "prettier --write extension tests/*.mjs .github package.json *.md docs/*.md",
     "format:check": "prettier --check extension tests/*.mjs .github package.json *.md docs/*.md",
     "build": "python tools/package.py"

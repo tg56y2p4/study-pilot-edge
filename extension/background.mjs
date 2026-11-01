@@ -219,8 +219,9 @@ async function solve(message, sender) {
       { text: question.text, type: question.type, options: question.options },
       images.length ? await imageDigest(images[0]) : '',
     ]);
-    if (cache.has(fingerprint))
-      return recordAnswer(id, generation, question, cache.get(fingerprint), true);
+    const cachedAnswer = cache.get(fingerprint);
+    if (cachedAnswer && cachedAnswer.confidence >= s.minConfidence && !cachedAnswer.validationIssue)
+      return recordAnswer(id, generation, question, cachedAnswer, true);
     if (current.calls >= s.maxCalls) {
       await queue(id, async () => {
         const st = await state(id);
@@ -256,7 +257,9 @@ async function solve(message, sender) {
       const after = await state(id);
       if (after.generation !== generation || after.blocked) throw new Error('解析已停止。');
       const result = await recordAnswer(id, generation, question, answer);
-      cache.set(fingerprint, answer);
+      if (answer.confidence >= s.minConfidence && !answer.validationIssue)
+        cache.set(fingerprint, answer);
+      else cache.delete(fingerprint);
       if (cache.size > 200) cache.delete(cache.keys().next().value);
       return result;
     } catch (error) {
@@ -439,6 +442,28 @@ async function pauseTab(id, reason) {
 async function route(m, sender) {
   await ready;
   if (!m || typeof m.type !== 'string') throw new Error('无效请求。');
+  if (
+    m.type === 'KP_RETRY_LOW' &&
+    (trusted(sender) || (courseSender(sender) && sender.frameId === 0))
+  ) {
+    const tab = await courseTab(trusted(sender) ? m.tabId : sender.tab.id);
+    const config = await settings();
+    if (!config.apiKey || !config.endpoint || !config.model)
+      throw new Error('请先保存API地址、Key和文字模型。');
+    await queue(tab.id, async () => {
+      const st = await state(tab.id);
+      if (st.submission) throw new Error('请先处理当前提交确认或等待平台返回结果。');
+      st.running = false;
+      st.blocked = '';
+      st.generation++;
+      st.manualUntil = Date.now() + 120000;
+      log(st, '正在重新解析未达到阈值的题目；保留已有作答，不自动提交。');
+      await saveState(tab.id, st);
+    });
+    activeRequests.get(tab.id)?.abort();
+    await broadcast(tab.id, { type: 'KP_SOLVE_PAGE' });
+    return { ok: true };
+  }
   if (trusted(sender)) {
     if (m.type === 'KP_GET_SETTINGS') {
       const s = await settings();
@@ -630,6 +655,25 @@ async function route(m, sender) {
               key: String(m.key || '').slice(0, 200),
               chapter: String(m.chapter || st.moocSelected?.chapter || '').slice(0, 160),
             };
+            const course = st.moocResume.course,
+              key = taskKey(m.key);
+            const selectedLesson =
+              key.startsWith('lesson:') &&
+              st.moocSelected?.course === course &&
+              st.moocSelected.key === key;
+            if (
+              st.progress?.doneCards?.[st.context?.card] &&
+              (key === st.context.card || selectedLesson)
+            ) {
+              const proof = { course, key, chapter: st.moocResume.chapter };
+              st.moocCompletedUnits = [
+                ...(st.moocCompletedUnits || []).filter(
+                  (item) =>
+                    !(item.course === course && item.key === key && item.chapter === proof.chapter)
+                ),
+                proof,
+              ].slice(-3000);
+            }
             await saveState(id, st);
           }
           return { ok: true };
@@ -641,6 +685,7 @@ async function route(m, sender) {
             st.moocSelected = {
               key: String(m.key || '').slice(0, 200),
               chapter: String(m.chapter || '').slice(0, 160),
+              course: new URL(sender.tab.url).origin + new URL(sender.tab.url).pathname,
             };
             await saveState(id, st);
           }
@@ -767,19 +812,18 @@ async function route(m, sender) {
       if (m.type === 'KP_MOOC_FINISH')
         return queue(id, async () => {
           const st = await state(id);
+          const course = new URL(sender.tab.url).origin + new URL(sender.tab.url).pathname;
+          st.moocManualTasks = mergeTasks(st.moocManualTasks || []);
+          const pending = st.moocManualTasks.filter((task) => task.course === course);
           if (
             st.running &&
             st.generation === m.generation &&
-            (st.moocResume?.key || m.allLearned)
+            m.catalogChecked === true &&
+            (m.allLearned === true || pending.length > 0)
           ) {
-            const course =
-              st.moocResume?.course ||
-              new URL(sender.tab.url).origin + new URL(sender.tab.url).pathname;
-            st.moocManualTasks = mergeTasks(st.moocManualTasks || []);
-            const pending = st.moocManualTasks.filter((task) => task.course === course);
             st.moocAutoFinishedCourse = course;
             st.running = false;
-            st.completed = !pending.length;
+            st.completed = !pending.length && m.allLearned === true;
             st.blocked = pending.length
               ? '视频和课件已处理，' + pendingSummary(pending) + '。可在下方逐项处理。'
               : '';
@@ -825,7 +869,7 @@ async function route(m, sender) {
         if (
           st.running &&
           st.generation === m.generation &&
-          (st.progress?.doneCards[st.context?.card] || m.allCatalogDone)
+          st.progress?.doneCards[st.context?.card]
         ) {
           st.running = false;
           st.completed = true;
@@ -932,6 +976,7 @@ async function route(m, sender) {
           : null,
         targetCourse: st.targetCourse,
         moocResume: st.moocResume,
+        moocCompletedUnits: st.moocCompletedUnits,
         moocManualTasks: st.moocManualTasks,
         moocSelected: st.moocSelected,
         moocReview: st.moocReview,
@@ -1026,9 +1071,9 @@ async function route(m, sender) {
       return queue(id, async () => {
         const st = await state(id),
           s = await settings();
-        if (!st.running || st.generation !== m.generation || (!s.autoSubmit && !m.inVideo))
-          return { allowed: false };
+        if (!st.running || st.generation !== m.generation) return { allowed: false };
         if (m.type === 'KP_SUBMIT_INTENT') {
+          if (!s.autoSubmit && !m.inVideo) return { allowed: false };
           st.submission = {
             nonce: crypto.randomUUID(),
             generation: st.generation,
@@ -1041,6 +1086,7 @@ async function route(m, sender) {
           return { allowed: true };
         }
         if (
+          (!s.autoSubmit && !st.submission?.inVideo) ||
           !s.autoConfirm ||
           !st.submission ||
           st.submission.phase === 'awaiting_result' ||
@@ -1105,6 +1151,13 @@ async function route(m, sender) {
         const st = await state(id),
           s = await settings();
         if (!st.running || st.generation !== m.generation) return { refreshed: false };
+        // Keep even an older form report until its context changes or it reports completion.
+        // Background throttling must not turn an unsubmitted form into a reloadable blank page.
+        if (
+          st.submission ||
+          Object.values(st.frames || {}).some((frame) => frame.questions > 0 && !frame.completed)
+        )
+          return { refreshed: false, protected: true };
         const reason = String(m.reason || '页面长时间无响应').slice(0, 120);
         const ctxKey = JSON.stringify(st.context || sender.tab.url);
         if (st.refreshContext !== ctxKey) {

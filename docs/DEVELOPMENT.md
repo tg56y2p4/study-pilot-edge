@@ -1,6 +1,6 @@
 # 开发与测试
 
-环境：Node.js 22 或更新版本、Python 3.11 或更新版本。CI 使用 Node.js 24、Python 3.13 和 Playwright 自带 Chromium。
+环境：Node.js 22 或更新版本、Python 3.11 或更新版本。CI 使用 Node.js 24、Python 3.13，并分别在 Linux Chromium 和 Windows Edge 运行完整离线回归。
 
 ```sh
 npm ci --ignore-scripts
@@ -16,6 +16,8 @@ npm run build
 Linux 首次配置浏览器系统依赖可使用 `python -m playwright install --with-deps chromium`。
 
 `npm run test:unit` 会输出 `test-results/unit-report.json`。浏览器检查全部使用独立临时配置与模拟 API/课程，不需要 Key，不访问个人浏览器，不操作真实账号。
+
+完整浏览器套件包含原有五套检查和 `stability_check.py`。稳定性用例覆盖未提交作答、父子框架、手动/自动确认、完整目录、折叠菜单、低分重试及调用上限；可用 `--suite stability_check.py` 单独运行，但单套结果不能用于发行打包。
 
 ## 选择浏览器
 

@@ -45,6 +45,9 @@
     pendingReadPage = 0,
     readPageStalls = 0;
   let lastMediaSource = '';
+  let catalogRun = '';
+  const catalogSnapshot = new Map();
+  const catalogChapters = new Set();
   const taskMetaSent = new Map();
   let reviewStarted = 0,
     reviewSeen = new Set(),
@@ -525,8 +528,19 @@
       }
       return { handled: true, waiting: '该单元需要本人参与讨论，可返回课件目录继续其他内容。' };
     }
-    if (!units.length && lessonNodes().length) {
-      const targets = listTargets(),
+    if (!units.length && (lessonNodes().length || all('.m-learnChapterNormal').length)) {
+      const runKey = location.origin + location.pathname + '|' + state.started;
+      if (catalogRun !== runKey) {
+        catalogRun = runKey;
+        catalogSnapshot.clear();
+        catalogChapters.clear();
+      }
+      const rendered = listTargets();
+      for (const item of rendered) {
+        catalogSnapshot.set(item.chapterName + '|' + item.key.replace(/["']+$/, ''), item);
+        if (item.chapterName) catalogChapters.add(item.chapterName);
+      }
+      const targets = [...catalogSnapshot.values()],
         resume = state.moocResume,
         pending = (state.moocManualTasks || []).filter(
           (task) => task.course === location.origin + location.pathname
@@ -547,35 +561,44 @@
           }
         }
       }
-      const remaining = (index >= 0 ? targets.slice(index + 1) : targets).filter(
-        (item) => !pending.some((task) => sameTarget(item, task))
-      );
+      const remaining = (
+        index >= 0 ? [...targets.slice(index + 1), ...targets.slice(0, index + 1)] : targets
+      ).filter((item) => !pending.some((task) => sameTarget(item, task)));
       const chapters = all('.m-learnChapterNormal'),
-        unexpandedChapter = chapters.find((node) => !targets.some((item) => item.chapter === node));
+        unexpandedChapter = chapters.find((node) => {
+          const title = text(node.querySelector('.j-titleName'));
+          return title
+            ? !catalogChapters.has(title)
+            : !rendered.some((item) => item.chapter === node);
+        });
       const isLearned = (item) =>
         item.node.matches('.learned,[data-completed=true]') ||
         !!item.node.querySelector('.tag.learned,.u-icon-check,[data-completed=true]');
-      const next = remaining.find((item) => !isLearned(item));
+      const course = location.origin + location.pathname;
+      const isCovered = (item) =>
+        isLearned(item) ||
+        (state.moocCompletedUnits || []).some(
+          (proof) => proof.course === course && sameTarget(item, proof)
+        );
+      const next = remaining.find((item) => !isCovered(item));
       if (!next) {
-        const previous =
-            index >= 0
-              ? targets[index].chapter
-              : chapters.find(
-                  (node) => text(node.querySelector('.j-titleName')) === resume?.chapter
-                ) || targets.at(-1)?.chapter,
-          chapterIndex = chapters.indexOf(previous),
-          nextChapter = chapterIndex >= 0 ? chapters[chapterIndex + 1] : unexpandedChapter;
+        const nextChapter = unexpandedChapter;
         if (nextChapter) {
           const heading = nextChapter.querySelector('.j-titleBox');
           if (heading && allowed(heading)) {
             await click(heading, 'expand:' + text(heading), api);
             return { handled: true, waiting: '正在加载下一章课时。' };
           }
+          return { handled: true, waiting: '章节尚未开放或被锁定，请检查课程安排。' };
         }
-        const allLearned = targets.length > 0 && targets.every(isLearned);
-        if (targets.length && (index >= 0 || pending.length || allLearned)) {
+        const allLearned = targets.length > 0 && targets.every(isCovered);
+        if (
+          targets.length &&
+          targets.every((item) => isCovered(item) || pending.some((task) => sameTarget(item, task)))
+        ) {
           await send('KP_MOOC_FINISH', {
             generation: state.generation,
+            catalogChecked: true,
             allLearned,
             reason:
               allLearned && !pending.length
@@ -586,8 +609,12 @@
         }
       }
       if (next) {
-        if (!visible(next.node) && next.chapter) {
-          const heading = next.chapter.querySelector('.j-titleBox');
+        if ((!next.node.isConnected || !visible(next.node)) && next.chapter) {
+          const chapter =
+            chapters.find(
+              (node) => text(node.querySelector('.j-titleName')) === next.chapterName
+            ) || next.chapter;
+          const heading = chapter.querySelector('.j-titleBox');
           if (heading && allowed(heading)) {
             await click(heading, 'expand:' + next.chapterName, api);
             return { handled: true, waiting: '正在展开后续课时所在章节。' };
@@ -749,8 +776,8 @@
     const units = unitNodes(),
       active = activeUnit();
     const index = units.indexOf(active),
-      key = active ? unitKey(active) : api.state.context.card;
-    if (active)
+      key = active ? unitKey(active) : api.state.moocSelected?.key || api.state.context.card;
+    if (active || /^(?:unit|lesson):/.test(key))
       await api.send('KP_MOOC_CURSOR', {
         generation: api.state.generation,
         key,

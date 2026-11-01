@@ -318,6 +318,10 @@ export function parseAnswer(data, question) {
     typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
       ? Math.max(0, Math.min(1, parsed.confidence))
       : 0;
+  let validationIssue =
+    typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+      ? ''
+      : '模型未返回有效的数值自评分';
   if (question.type === 'boolean') {
     answers = answers.map((answer) => {
       const meaning = booleanMeaning(answer);
@@ -331,11 +335,25 @@ export function parseAnswer(data, question) {
   }
   if (question.options.length) {
     const allowed = question.options.map((o) => o.label);
-    if (!answers.every((a) => allowed.includes(a))) confidence = 0;
-    if (['single', 'boolean'].includes(question.type) && answers.length !== 1) confidence = 0;
+    if (!answers.every((a) => allowed.includes(a))) {
+      confidence = 0;
+      validationIssue = '答案未使用当前题目的选项字母';
+    }
+    if (['single', 'boolean'].includes(question.type) && answers.length !== 1) {
+      confidence = 0;
+      validationIssue = '单选或判断题没有返回唯一答案';
+    }
   }
-  if (!answers.length) confidence = 0;
-  return { answers, confidence, explanation: String(parsed.explanation || '').slice(0, 6000) };
+  if (!answers.length) {
+    confidence = 0;
+    validationIssue = '模型没有返回可填写的答案';
+  }
+  return {
+    answers,
+    confidence,
+    validationIssue,
+    explanation: String(parsed.explanation || '').slice(0, 6000),
+  };
 }
 
 export function apiError(status, data) {

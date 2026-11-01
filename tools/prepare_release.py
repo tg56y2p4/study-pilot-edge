@@ -69,7 +69,7 @@ def verify_artifacts(root, folder, version):
     _manifest, expected_install = extension_payload(root)
     if install != expected_install:
         raise ValueError('Install archive does not match the current extension and documents')
-    expected_suites = {'unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending'}
+    expected_suites = {'unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending', 'stability'}
     counts = checks.get('checks', {})
     if (checks.get('source_fingerprint') != source_fingerprint(root)
             or set(counts) != expected_suites

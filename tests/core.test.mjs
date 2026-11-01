@@ -247,3 +247,18 @@ test('自检与超时自动刷新配置规范化边界值', () => {
   const capped = normalizeSettings({ autoRefresh: true, stallTimeout: 999999 });
   assert.equal(capped.stallTimeout, 300000);
 });
+
+test('格式异常与模型正常低分提供不同的复核原因', () => {
+  const invalid = parseAnswer(response({ answers: ['B'], confidence: '0.95' }), question);
+  assert.equal(invalid.confidence, 0);
+  assert.match(invalid.validationIssue, /数值自评分/);
+  const low = parseAnswer(response({ answers: ['B'], confidence: 0.2 }), question);
+  assert.equal(low.confidence, 0.2);
+  assert.equal(low.validationIssue, '');
+});
+
+test('无效选项不能以高自评分绕过答案校验', () => {
+  const parsed = parseAnswer(response({ answers: ['不存在的选项'], confidence: 1 }), question);
+  assert.equal(parsed.confidence, 0);
+  assert.match(parsed.validationIssue, /选项字母/);
+});

@@ -20,10 +20,11 @@
 
 推送到 `main`、创建 `v*` 标签或手动触发时，GitHub Actions 会运行离线检查并上传构建产物。普通提交与 PR 的检查只有只读权限。
 
-正式发布时先提交源码和文档，确认 `main` 检查通过，再推送与源码版本一致的标签：
+正式发布时先将源码和文档推送到功能分支，创建面向 `main` 的 PR；两项必过检查通过后合并。同步本地 `main`，确认其检查通过，再推送与源码版本一致的标签：
 
 ```sh
-git push origin main
+git switch main
+git pull --ff-only origin main
 git tag -a v0.7.0 -m "Release v0.7.0"
 git push origin v0.7.0
 ```

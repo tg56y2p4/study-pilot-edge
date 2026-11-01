@@ -42,11 +42,17 @@ async function refresh() {
   const latest = s.results[0];
   $('result').hidden = !latest;
   $('noResult').hidden = !!latest;
-  $('confidence').textContent = latest ? `模型自评 ${Math.round(latest.confidence * 100)}%` : '';
+  $('confidence').textContent = latest
+    ? latest.validationIssue
+      ? '格式待复核'
+      : `模型自评 ${Math.round(latest.confidence * 100)}%`
+    : '';
   if (latest) {
     $('question').textContent = latest.text;
     $('answer').textContent = latest.answers.join('、') || '需要复核';
-    $('explanation').textContent = latest.explanation;
+    $('explanation').textContent = [latest.validationIssue, latest.explanation]
+      .filter(Boolean)
+      .join('\n');
   }
   $('logs').replaceChildren(
     ...s.logs.map((item) => {
@@ -70,6 +76,7 @@ for (const [id, type] of [
   ['stop', 'KP_STOP'],
   ['scan', 'KP_SCAN'],
   ['fill', 'KP_FILL'],
+  ['retry', 'KP_RETRY_LOW'],
 ]) {
   $(id).onclick = async () => {
     inFlight = true;
@@ -82,6 +89,7 @@ for (const [id, type] of [
           stop: '已停止。',
           scan: '已发送解析请求，请在此处或课程面板查看结果。',
           fill: '已发送填写请求；只填写达到阈值且未作答的题目。',
+          retry: '正在重试低分或格式异常题目；保留已有答案，不自动提交。',
         }[id]
       );
     } catch (e) {

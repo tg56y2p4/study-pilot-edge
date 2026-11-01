@@ -551,11 +551,14 @@
         showError(new Error('复制失败，请在插件窗口中查看解析。'));
       }
     };
+    const retry = document.createElement('button');
+    retry.textContent = '重试低分题';
+    retry.onclick = () => send('KP_RETRY_LOW').catch(showError);
     hudPending = document.createElement('div');
     hudPending.style.cssText =
       'font-size:12px;color:#8d5329;margin:10px 0;padding:9px 11px;background:#fffbeb;border:1px solid #f5d89a;border-radius:9px;max-height:250px;overflow:auto';
     hudPending.hidden = true;
-    footer.append(stop, copy);
+    footer.append(stop, copy, retry);
     main.append(hudStatus, hudPending, hudAnswer, footer);
     box.append(header, main);
     shadow.append(style, box);
@@ -651,7 +654,7 @@
   function displayResult(result) {
     lastResult = result;
     if (hudAnswer)
-      hudAnswer.textContent = `${result.text}\n\n答案：${result.answers.join('、') || '待确认'}\n模型自评：${Math.round(result.confidence * 100)}%\n\n${result.explanation}`;
+      hudAnswer.textContent = `${result.text}\n\n答案：${result.answers.join('、') || '待确认'}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n\n${result.explanation}`;
   }
   async function blockIfNeeded() {
     const captcha = all(
@@ -960,21 +963,22 @@
     const nextTask = tabs.find((el) => !done[tabKey(el)] && el !== active);
     let target = nextTask;
     if (!target && tabs.some((el) => !done[tabKey(el)])) return;
-    if (
-      !nextTask &&
-      index >= 0 &&
-      index < catalog.length - 1 &&
-      catalog.slice(index + 1).every(catalogNodeDone)
-    ) {
+    const laterIndex =
+      index >= 0 ? catalog.findIndex((el, i) => i > index && !catalogNodeDone(el)) : -1;
+    const nextCatalogIndex =
+      laterIndex >= 0
+        ? laterIndex
+        : index >= 0
+          ? catalog.findIndex((el, i) => i < index && !catalogNodeDone(el))
+          : -1;
+    if (!nextTask && index >= 0 && catalog.length && nextCatalogIndex < 0 && currentDone) {
       await send('KP_FINISH', {
         generation: current.generation,
         allCatalogDone: true,
-        reason: '自检确认当前及后续章节均已完成，托管已结束。',
+        reason: '自检确认当前任务和全目录其他章节均已完成，托管已结束。',
       });
       return;
     }
-    const nextCatalogIndex =
-      index >= 0 ? catalog.findIndex((el, i) => i > index && !catalogNodeDone(el)) : -1;
     const catalogTarget =
       nextCatalogIndex >= 0
         ? catalog[nextCatalogIndex].querySelector('.clicktitle,a,[role="button"]')
@@ -988,10 +992,10 @@
       !nextTask &&
       ((!target && catalogTarget) ||
         (navigationAttempts >= 2 && catalogTarget) ||
-        (nextCatalogIndex > index + 1 && catalogTarget))
+        (nextCatalogIndex !== index + 1 && catalogTarget))
     )
       target = catalogTarget;
-    if (!target && index >= 0 && index === catalog.length - 1) {
+    if (!target && index >= 0 && index === catalog.length - 1 && nextCatalogIndex < 0) {
       await send('KP_FINISH', { generation: current.generation });
       return;
     }
@@ -1041,6 +1045,13 @@
     )
       return;
     const frames = Object.values(current.frames || {}).filter((f) => Date.now() - f.time < 9000);
+    if (
+      current.submission ||
+      Object.values(current.frames || {}).some((f) => f.questions > 0 && !f.completed)
+    ) {
+      lastActivityAt = Date.now();
+      return;
+    }
     const mediaSec = Math.floor(frames.reduce((n, f) => n + (Number(f.mediaTime) || 0), 0));
     const pendingCount = frames.reduce((n, f) => n + (Number(f.pending) || 0), 0);
     const doneCount = Object.keys(current.progress?.doneCards || {}).length;
@@ -1358,7 +1369,8 @@
         attempts.clear();
         answerContext = context;
       }
-      if (runGeneration !== current.generation) {
+      const newRun = runGeneration !== current.generation;
+      if (newRun) {
         runGeneration = current.generation;
         attempts.clear();
         retryAfter.clear();
@@ -1456,9 +1468,22 @@
       for (let q of questions) {
         if (!current.running && !manual && !fillOnce) break;
         const key = questionKey(q);
+        const retryKnownLow =
+          shouldSolve &&
+          (manual || newRun) &&
+          answers.get(key)?.confidence < current.settings.minConfidence;
+        if (retryKnownLow) {
+          answers.delete(key);
+          attempts.delete(key);
+          retryAfter.delete(key);
+        }
         // Reopening an already filled exercise must recover its answer proof;
         // preserve the existing fields while checking them before submission.
-        if (q.answered && (!current.running || !current.settings.autoSubmit || answers.has(key))) {
+        if (
+          q.answered &&
+          !retryKnownLow &&
+          (!current.running || !current.settings.autoSubmit || answers.has(key))
+        ) {
           filled++;
           continue;
         }
@@ -1560,7 +1585,24 @@
       current = await send('KP_STATE');
       if (current.generation !== runGeneration || (await blockIfNeeded())) return;
       if (reviewReason && current.running && current.settings.autoSubmit) {
-        await send('KP_BLOCK', { reason: reviewReason });
+        const details = questions.flatMap((q, i) => {
+          const answer = answers.get(questionKey(q));
+          if (
+            !answer ||
+            (q.answered && matchesAnswer(q, answer)) ||
+            answer.confidence >= current.settings.minConfidence
+          )
+            return [];
+          const issue =
+            answer.validationIssue ||
+            `自评 ${Math.round(answer.confidence * 1000) / 10}%，阈值 ${Math.round(current.settings.minConfidence * 100)}%`;
+          return [`本区域第 ${i + 1} 题：${q.text.slice(0, 65)}（${issue}）`];
+        });
+        await send('KP_BLOCK', {
+          reason: details.length
+            ? `${reviewReason}${details.slice(0, 3).join('；')}。可点击“重试低分题”重新解析。`
+            : reviewReason,
+        });
         return;
       }
       const inVideoQuiz = questions.some((q) => q.inVideoQuiz);

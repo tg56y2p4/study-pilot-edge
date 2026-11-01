@@ -16,7 +16,7 @@ PUBLIC_TOOLS = (
 PUBLIC_TESTS = (
     'api.test.mjs', 'core.test.mjs', 'mooc_tasks.test.mjs', 'browser_check.py',
     'browser_support.py', 'models_browser_check.py', 'mooc_check.py',
-    'mooc_pending_check.py', 'workflow_check.py', 'release_test.py',
+    'mooc_pending_check.py', 'workflow_check.py', 'release_test.py', 'stability_check.py',
 )
 ROOT_FILES = (
     '.gitignore', '.gitattributes', '.editorconfig', '.prettierignore',
@@ -87,7 +87,7 @@ def write_zip(destination, payload):
 
 def verified_checks(root):
     output = root / 'test-results'
-    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json'}
+    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json', 'stability': 'stability-report.json'}
     # The Chromium suite uses its own report name.
     aggregate = json.loads((output / 'browser-suite-report.json').read_text(encoding='utf-8'))
     if aggregate.get('browser') == 'chromium':

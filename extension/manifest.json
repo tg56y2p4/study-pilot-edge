@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "课伴 · 学习通与MOOC助手",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "学习通与中国大学MOOC课程助手：我的课程定位、音视频播放、图文解题、提交确认及单元切换。",
   "permissions": ["storage", "activeTab", "scripting", "debugger"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
@@ -16,8 +16,14 @@
     "https://maas.qianwenaiapi.com/*",
     "https://*.maas.aliyuncs.com/*"
   ],
-  "background": { "service_worker": "background.mjs", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "课伴 · 课程助手" },
+  "background": {
+    "service_worker": "background.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "课伴 · 课程助手"
+  },
   "options_page": "options.html",
   "content_scripts": [
     {

@@ -134,7 +134,7 @@ test('通用请求不包含千问专属参数，JSON约束可关闭', () => {
   assert.equal('enable_thinking' in body, false);
   assert.equal('response_format' in body, false);
   const reasoning = requestBody(
-    { ...configured, endpoint: 'https://api.example.test/v1', model: 'gpt-5-fixture' },
+    { ...configured, endpoint: 'https://api.example.test/v1', model: 'openai/gpt-5-fixture' },
     question
   );
   assert.equal('temperature' in reasoning, false);
@@ -176,13 +176,39 @@ test('题目放入用户数据，请求不包含页面 Cookie、Key 或整个页
   assert.deepEqual(JSON.parse(body.messages[1].content), question);
   assert.equal('apiKey' in body, false);
 });
-test('正确解析答案及解释', () => {
+test('正确解析答案及解释，兼容判断题文字与符号选项映射', () => {
   const parsed = parseAnswer(
     response({ answers: ['B'], explanation: '2+2=4', confidence: 0.96 }),
     question
   );
   assert.deepEqual(parsed.answers, ['B']);
   assert.equal(parsed.confidence, 0.96);
+  const judgeReversed = {
+    text: '判断：地球绕太阳转',
+    type: 'boolean',
+    options: [
+      { label: 'A', text: '错误' },
+      { label: 'B', text: '正确' },
+    ],
+  };
+  const mapped = parseAnswer(
+    response({ answers: ['正确'], explanation: '公转', confidence: 0.95 }),
+    judgeReversed
+  );
+  assert.deepEqual(mapped.answers, ['B']);
+  assert.equal(mapped.confidence, 0.95);
+  const judgeImage = {
+    text: '【图片题】判断正误',
+    type: 'boolean',
+    options: [
+      { label: 'A', text: '' },
+      { label: 'B', text: '' },
+    ],
+  };
+  assert.deepEqual(
+    parseAnswer(response({ answers: ['错误'], confidence: 0.92 }), judgeImage).answers,
+    ['B']
+  );
 });
 test('不存在的选项和不完整的自评分数不能自动填写', () => {
   assert.equal(parseAnswer(response({ answers: ['Z'], confidence: 1 }), question).confidence, 0);
@@ -210,4 +236,14 @@ test('错误只显示状态和错误代码，不回显接口原始正文', () =>
   });
   assert.match(text, /401/);
   assert.doesNotMatch(text, /should not echo/);
+});
+test('自检与超时自动刷新配置规范化边界值', () => {
+  const defaults = normalizeSettings({});
+  assert.equal(defaults.autoRefresh, true);
+  assert.equal(defaults.stallTimeout, 45000);
+  const custom = normalizeSettings({ autoRefresh: false, stallTimeout: 5000 });
+  assert.equal(custom.autoRefresh, false);
+  assert.equal(custom.stallTimeout, 15000);
+  const capped = normalizeSettings({ autoRefresh: true, stallTimeout: 999999 });
+  assert.equal(capped.stallTimeout, 300000);
 });

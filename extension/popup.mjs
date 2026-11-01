@@ -17,6 +17,8 @@ async function refresh() {
   const s = await send('KP_STATUS');
   const frames = Object.values(s.frames).filter((f) => Date.now() - f.time < 10000);
   $('status').classList.toggle('running', s.running);
+  $('status').classList.toggle('blocked', !s.running && !!s.blocked);
+  $('status').classList.toggle('completed', !s.running && !s.blocked && !!s.completed);
   $('statusTitle').textContent = s.running
     ? '正在托管'
     : s.completed
@@ -40,11 +42,11 @@ async function refresh() {
   const latest = s.results[0];
   $('result').hidden = !latest;
   $('noResult').hidden = !!latest;
+  $('confidence').textContent = latest ? `模型自评 ${Math.round(latest.confidence * 100)}%` : '';
   if (latest) {
     $('question').textContent = latest.text;
     $('answer').textContent = latest.answers.join('、') || '需要复核';
     $('explanation').textContent = latest.explanation;
-    $('confidence').textContent = `模型自评 ${Math.round(latest.confidence * 100)}%`;
   }
   $('logs').replaceChildren(
     ...s.logs.map((item) => {

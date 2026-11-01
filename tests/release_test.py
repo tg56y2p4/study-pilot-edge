@@ -17,6 +17,8 @@ class ReleaseTests(unittest.TestCase):
         manifest, payload = extension_payload(ROOT)
         self.assertEqual(manifest['manifest_version'], 3)
         self.assertTrue(set(EXTENSION_FILES).issubset(payload))
+        self.assertIn('docs/images/settings.png', payload)
+        self.assertIn('SECURITY.md', payload)
         self.assertFalse(any(name.startswith(('test-results/', 'tools/', '.planning/')) for name in payload))
 
     def test_identical_inputs_have_identical_zip_bytes(self):

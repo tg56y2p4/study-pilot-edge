@@ -91,6 +91,10 @@ function renderModels() {
   }
   summary();
 }
+function setBadge(text, state = '') {
+  $('connectionBadge').textContent = text;
+  $('connectionBadge').className = state ? `tag ${state}` : 'tag';
+}
 function invalidate() {
   revision++;
   if (catalogInFlight) send('KP_CANCEL_MODELS').catch(() => {});
@@ -100,7 +104,7 @@ function invalidate() {
   show('接入信息已改变，请重新拉取模型。', false, 'modelMessage');
   renderModels();
   keyStatus();
-  $('connectionBadge').textContent = '配置有改动';
+  setBadge('配置有改动', 'dirty');
 }
 function load(s) {
   for (const key of Object.keys(DEFAULTS)) {
@@ -114,7 +118,8 @@ function load(s) {
   $('sameModel').checked = s.model === s.visionModel;
   renderModels();
   keyStatus();
-  $('connectionBadge').textContent = hasKey && s.endpoint && s.model ? '接入已保存' : '等待配置';
+  const ready = Boolean(hasKey && s.endpoint && s.model);
+  setBadge(ready ? '接入已保存' : '等待配置', ready ? 'ready' : '');
 }
 function collect() {
   const values = {};
@@ -158,7 +163,7 @@ async function save(mode = 'all') {
   $('showKey').setAttribute('aria-pressed', 'false');
   keyStatus();
   summary();
-  $('connectionBadge').textContent = '接入已保存';
+  setBadge('接入已保存', 'ready');
   show('设置已保存。课程托管会使用你选择的模型。');
 }
 $('fetchModels').onclick = async () => {
@@ -299,20 +304,15 @@ $('clearKey').onclick = async () => {
   }
 };
 $('reset').onclick = () => {
-  try {
-    const s = collect();
-    load({
-      ...DEFAULTS,
-      endpoint: s.endpoint,
-      model: s.model,
-      visionModel: s.visionModel,
-      rememberKey: s.rememberKey,
-      jsonMode: s.jsonMode,
-    });
-    show('行为设置已恢复默认，点击保存后生效。');
-  } catch (error) {
-    show(error.message, true);
-  }
+  load({
+    ...DEFAULTS,
+    endpoint: $('endpoint').value.trim(),
+    model: $('model').value.trim(),
+    visionModel: $('visionModel').value.trim(),
+    rememberKey: $('rememberKey').checked,
+    jsonMode: $('jsonMode').checked,
+  });
+  show('行为设置已恢复默认，点击保存后生效。');
 };
 try {
   const s = await send('KP_GET_SETTINGS');

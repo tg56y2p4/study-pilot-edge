@@ -534,6 +534,9 @@ async function route(m, sender) {
           st.agentSignature = '';
           st.submission = null;
           st.frames = {};
+          st.refreshCount = 0;
+          st.refreshContext = '';
+          st.lastRefreshAt = 0;
           st.started = Date.now();
           log(st, '已开始本轮托管。');
         }
@@ -546,7 +549,7 @@ async function route(m, sender) {
         if (m.type === 'KP_SCAN') {
           st.blocked = '';
           st.manualUntil = Date.now() + 120000;
-          log(st, '正在解析本页可识别的文字题目。');
+          log(st, '正在解析本页可识别的题目。');
         }
         await saveState(tab.id, st);
       });
@@ -764,12 +767,17 @@ async function route(m, sender) {
       if (m.type === 'KP_MOOC_FINISH')
         return queue(id, async () => {
           const st = await state(id);
-          if (st.running && st.generation === m.generation && st.moocResume?.key) {
+          if (
+            st.running &&
+            st.generation === m.generation &&
+            (st.moocResume?.key || m.allLearned)
+          ) {
+            const course =
+              st.moocResume?.course ||
+              new URL(sender.tab.url).origin + new URL(sender.tab.url).pathname;
             st.moocManualTasks = mergeTasks(st.moocManualTasks || []);
-            const pending = st.moocManualTasks.filter(
-              (task) => task.course === st.moocResume.course
-            );
-            st.moocAutoFinishedCourse = st.moocResume.course;
+            const pending = st.moocManualTasks.filter((task) => task.course === course);
+            st.moocAutoFinishedCourse = course;
             st.running = false;
             st.completed = !pending.length;
             st.blocked = pending.length
@@ -778,7 +786,10 @@ async function route(m, sender) {
             st.generation++;
             log(
               st,
-              st.blocked || '所选MOOC课程的可访问学习内容已处理完毕，请以平台成绩和任务要求为准。',
+              st.blocked ||
+                String(
+                  m.reason || '所选MOOC课程的可访问学习内容已处理完毕，请以平台成绩和任务要求为准。'
+                ).slice(0, 160),
               pending.length ? 'warn' : 'info'
             );
             await saveState(id, st);
@@ -814,13 +825,13 @@ async function route(m, sender) {
         if (
           st.running &&
           st.generation === m.generation &&
-          st.progress?.doneCards[st.context?.card]
+          (st.progress?.doneCards[st.context?.card] || m.allCatalogDone)
         ) {
           st.running = false;
           st.completed = true;
           st.blocked = '';
           st.generation++;
-          log(st, '当前课程最后一节已确认完成，托管已结束。');
+          log(st, String(m.reason || '当前课程最后一节已确认完成，托管已结束。').slice(0, 160));
           await saveState(id, st);
         }
         return { ok: true };
@@ -849,6 +860,10 @@ async function route(m, sender) {
         activeRequests.get(id)?.abort();
         st.generation++;
         st.context = context;
+        if (st.refreshContext && st.refreshContext !== JSON.stringify(context)) {
+          st.refreshCount = 0;
+          st.refreshContext = JSON.stringify(context);
+        }
         st.frames = {};
         st.submission = null;
         st.pageStarted = Date.now();
@@ -876,10 +891,25 @@ async function route(m, sender) {
         const other = frames.reduce((n, f) => n + (f.otherTasks || 0), 0),
           otherDone =
             m.kind === 'document' &&
+            videos === 0 &&
+            tasks === 0 &&
             other > 0 &&
             other === frames.reduce((n, f) => n + (f.otherTasksDone || 0), 0);
-        if (!ended && !marked && !otherDone) return { accepted: false };
+        const selfChecked =
+          m.kind === 'selfcheck' &&
+          m.catalogDone === true &&
+          frames.length > 0 &&
+          frames.every(
+            (f) =>
+              f.videos === f.ended &&
+              (f.videoTasks || 0) === (f.videoTasksDone || 0) &&
+              (f.otherTasks || 0) === (f.otherTasksDone || 0) &&
+              !f.pending &&
+              !(f.questions > 0 && !f.completed)
+          );
+        if (!ended && !marked && !otherDone && !selfChecked) return { accepted: false };
         st.progress.doneCards[st.context.card] = true;
+        st.refreshCount = 0;
         await saveState(id, st);
         return { accepted: true };
       });
@@ -996,7 +1026,7 @@ async function route(m, sender) {
       return queue(id, async () => {
         const st = await state(id),
           s = await settings();
-        if (!st.running || st.generation !== m.generation || !s.autoSubmit)
+        if (!st.running || st.generation !== m.generation || (!s.autoSubmit && !m.inVideo))
           return { allowed: false };
         if (m.type === 'KP_SUBMIT_INTENT') {
           st.submission = {
@@ -1004,6 +1034,7 @@ async function route(m, sender) {
             generation: st.generation,
             time: Date.now(),
             frame: sender.frameId,
+            inVideo: !!m.inVideo,
             phase: 'awaiting_confirmation',
           };
           await saveState(id, st);
@@ -1051,6 +1082,12 @@ async function route(m, sender) {
         if (m.report.completed && st.context && st.progress) {
           st.progress.doneCards[st.context.card] = true;
           st.submission = null;
+        } else if (
+          st.submission?.inVideo &&
+          st.submission.frame === sender.frameId &&
+          m.report.questions === 0
+        ) {
+          st.submission = null;
         }
         await saveState(id, st);
         return { ok: true };
@@ -1062,6 +1099,43 @@ async function route(m, sender) {
         await saveState(id, st);
         return { ok: true };
       });
+    if (m.type === 'KP_SELF_CHECK' && sender.frameId === 0) {
+      if (activeRequests.has(id)) return { refreshed: false, busy: true };
+      const outcome = await queue(id, async () => {
+        const st = await state(id),
+          s = await settings();
+        if (!st.running || st.generation !== m.generation) return { refreshed: false };
+        const reason = String(m.reason || '页面长时间无响应').slice(0, 120);
+        const ctxKey = JSON.stringify(st.context || sender.tab.url);
+        if (st.refreshContext !== ctxKey) {
+          st.refreshContext = ctxKey;
+          st.refreshCount = 0;
+        }
+        if (!s.autoRefresh || (st.refreshCount || 0) >= 2) {
+          st.running = false;
+          st.manualUntil = 0;
+          st.generation++;
+          st.blocked = s.autoRefresh
+            ? `${reason}（已自动刷新 2 次仍未恢复，请检查课程是否已学完或网络状态）。`
+            : reason;
+          log(st, st.blocked, 'warn');
+          await saveState(id, st);
+          return { refreshed: false, paused: true };
+        }
+        st.refreshCount = (st.refreshCount || 0) + 1;
+        st.lastRefreshAt = Date.now();
+        st.pageStarted = Date.now();
+        st.generation++;
+        st.frames = {};
+        st.submission = null;
+        log(st, `自检：${reason}，正在自动刷新页面恢复（第 ${st.refreshCount}/2 次）。`, 'warn');
+        await saveState(id, st);
+        return { refreshed: true, count: st.refreshCount };
+      });
+      if (outcome.refreshed) await chrome.tabs.reload(id);
+      else if (outcome.paused) await broadcast(id, { type: 'KP_WAKE' });
+      return outcome;
+    }
     if (m.type === 'KP_BLOCK') {
       activeRequests.get(id)?.abort();
       await queue(id, async () => {
@@ -1173,6 +1247,23 @@ chrome.tabs.onCreated.addListener((tab) => {
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   if (moocCreated.has(id) && (change.url || change.title || change.status === 'complete'))
     considerMoocChild(tab).catch(() => {});
+  if (change.status === 'complete' && isCourseUrl(tab?.url)) {
+    state(id)
+      .then(async (st) => {
+        if (!st.running || !st.lastRefreshAt || Date.now() - st.lastRefreshAt > 30000) return;
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: id, allFrames: true },
+            files:
+              coursePlatform(tab.url) === 'mooc'
+                ? ['mooc-adapter.js', 'content.js']
+                : ['content.js'],
+          });
+        } catch {}
+        await broadcast(id, { type: 'KP_WAKE' });
+      })
+      .catch(() => {});
+  }
 });
 chrome.tabs.onRemoved.addListener((id) => {
   moocChildren.delete(id);

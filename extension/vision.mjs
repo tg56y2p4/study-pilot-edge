@@ -58,13 +58,15 @@ export function captureCourse(tabId, captureId = null) {
           const viewport = initial.cssVisualViewport || initial.visualViewport;
           const captureWidth = Math.max(1300, Math.ceil(viewport.clientWidth)),
             captureHeight = Math.max(400, Math.ceil(viewport.clientHeight));
-          await command('Emulation.setDeviceMetricsOverride', {
-            width: captureWidth,
-            height: captureHeight,
-            deviceScaleFactor: 1,
-            mobile: false,
-          });
-          resized = true;
+          if (viewport.clientWidth < 1300 || viewport.clientHeight < 400) {
+            await command('Emulation.setDeviceMetricsOverride', {
+              width: captureWidth,
+              height: captureHeight,
+              deviceScaleFactor: 1,
+              mobile: false,
+            });
+            resized = true;
+          }
           const { root } = await command('DOM.getDocument', { depth: -1, pierce: true });
           const node = descendants(
             root,

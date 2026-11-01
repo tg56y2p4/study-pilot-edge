@@ -31,6 +31,10 @@
     String(node?.dataset.id || node?.dataset.moocUnit || '').replace(/^[\s"']+|[\s"']+$/g, '');
   const unitKey = (node) => 'unit:' + unitId(node);
   const lessonNodes = () => all('.u-learnLesson,[data-mooc-lesson]');
+  const sameTarget = (item, ref) =>
+    !!ref &&
+    item.key.replace(/["']+$/, '') === String(ref.key || '').replace(/["']+$/, '') &&
+    (!item.chapterName || !ref.chapter || item.chapterName === ref.chapter);
   let lastClick = '',
     clickedAt = 0,
     clickAttempts = 0,
@@ -195,7 +199,9 @@
       clickAttempts = 0;
     }
     if (++clickAttempts > 3) {
-      await api.send('KP_BLOCK', {
+      clickAttempts = 0;
+      await api.send('KP_SELF_CHECK', {
+        generation: api.state.generation,
         reason: 'MOOC控件连续三次未切换页面，请检查课程开放状态或页面提示。',
       });
       return true;
@@ -248,7 +254,7 @@
       }
     };
     for (const target of listTargets())
-      if (pending.some((task) => task.key.replace(/["']+$/, '') === target.key))
+      if (pending.some((task) => sameTarget(target, task)))
         await meta({
           key: target.key,
           title: target.key.startsWith('lesson:')
@@ -337,7 +343,7 @@
       } catch {}
     }
     const targets = listTargets(),
-      target = targets.find((item) => item.key === task.key);
+      target = targets.find((item) => sameTarget(item, task));
     if (target && allowed(target.node)) {
       await send('KP_MOOC_TASK_META', {
         generation: state.generation,
@@ -469,10 +475,13 @@
       }
     }
     if (!readyContent(state)) {
-      if (transitionAt && Date.now() - transitionAt > 45000)
-        await send('KP_BLOCK', {
+      if (transitionAt && Date.now() - transitionAt > 45000) {
+        transitionAt = Date.now();
+        await send('KP_SELF_CHECK', {
+          generation: state.generation,
           reason: 'MOOC新单元超过45秒仍未加载出对应内容，请检查网络或课程页面。',
         });
+      }
       return { handled: true, waiting: '正在等待新单元加载，旧单元结果不计入当前任务。' };
     }
     const auto = all('input.j-autoNext').find((node) => node.checked);
@@ -524,7 +533,7 @@
         );
       const index =
         resume?.course === location.origin + location.pathname
-          ? targets.findIndex((item) => item.key === resume.key)
+          ? targets.findIndex((item) => sameTarget(item, resume))
           : -1;
       if (index < 0 && resume?.chapter) {
         const previousChapter = all('.m-learnChapterNormal').find(
@@ -539,24 +548,23 @@
         }
       }
       const remaining = (index >= 0 ? targets.slice(index + 1) : targets).filter(
-        (item) => !pending.some((task) => task.key === item.key)
+        (item) => !pending.some((task) => sameTarget(item, task))
       );
-      const next =
-        remaining.find(
-          (item) =>
-            !item.node.matches('.learned,[data-completed=true]') &&
-            !item.node.querySelector('.tag.learned')
-        ) || (index < 0 ? remaining[0] : null);
+      const chapters = all('.m-learnChapterNormal'),
+        unexpandedChapter = chapters.find((node) => !targets.some((item) => item.chapter === node));
+      const isLearned = (item) =>
+        item.node.matches('.learned,[data-completed=true]') ||
+        !!item.node.querySelector('.tag.learned,.u-icon-check,[data-completed=true]');
+      const next = remaining.find((item) => !isLearned(item));
       if (!next) {
-        const chapters = all('.m-learnChapterNormal'),
-          previous =
+        const previous =
             index >= 0
               ? targets[index].chapter
               : chapters.find(
                   (node) => text(node.querySelector('.j-titleName')) === resume?.chapter
-                ),
+                ) || targets.at(-1)?.chapter,
           chapterIndex = chapters.indexOf(previous),
-          nextChapter = chapterIndex >= 0 ? chapters[chapterIndex + 1] : null;
+          nextChapter = chapterIndex >= 0 ? chapters[chapterIndex + 1] : unexpandedChapter;
         if (nextChapter) {
           const heading = nextChapter.querySelector('.j-titleBox');
           if (heading && allowed(heading)) {
@@ -564,8 +572,16 @@
             return { handled: true, waiting: '正在加载下一章课时。' };
           }
         }
-        if (targets.length && (index >= 0 || pending.length)) {
-          await send('KP_MOOC_FINISH', { generation: state.generation });
+        const allLearned = targets.length > 0 && targets.every(isLearned);
+        if (targets.length && (index >= 0 || pending.length || allLearned)) {
+          await send('KP_MOOC_FINISH', {
+            generation: state.generation,
+            allLearned,
+            reason:
+              allLearned && !pending.length
+                ? '自检确认该MOOC课程所有章节课时均已学完，托管已结束。'
+                : '',
+          });
           return { handled: true, waiting: '可自动处理的学习内容已结束，请核对待本人处理项。' };
         }
       }
@@ -755,7 +771,7 @@
   globalThis.__KEBAN_ADAPTER__ = {
     name: '中国大学MOOC',
     questionSelector: '.u-questionItem,[data-mooc-question]',
-    titleSelector: '.j-richTxt,.question-title,.stem',
+    titleSelector: '.j-title,.j-richTxt,.question-title,.stem',
     optionSelector: '.j-choicebox .answer-item,[data-option],[role=radio],[role=checkbox]',
     context,
     courses,

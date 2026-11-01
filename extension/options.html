@@ -205,6 +205,15 @@
               ></span
             ></label
           >
+          <label class="check"
+            ><input id="autoRefresh" type="checkbox" /><span
+              ><b>长时间无响应时自动自检并刷新页面</b
+              ><small
+                >当课程页面卡住、音视频长时间停滞或切换下一节无响应时，先自检课程是否已全部学完；未学完则自动刷新当前页恢复（同一位置最多连续刷新
+                2 次）。</small
+              ></span
+            ></label
+          >
         </fieldset>
         <fieldset>
           <legend>题目与解析</legend>
@@ -329,6 +338,20 @@
               required
             /><small
               >默认每次翻页或滚动至少间隔 15 秒；平台要求的阅读时长仍以课程实际记录为准。</small
+            ></label
+          >
+          <label class="field"
+            ><span>无响应自检超时（毫秒）</span
+            ><input
+              id="stallTimeout"
+              type="number"
+              min="15000"
+              max="300000"
+              step="5000"
+              required
+            /><small
+              >默认 45000 毫秒（45
+              秒）；超出此时间页面既无播放进度也无答题进展时触发自检与自动刷新。</small
             ></label
           >
           <button id="reset" type="button">恢复默认行为设置</button>

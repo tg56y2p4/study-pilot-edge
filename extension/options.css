@@ -1,48 +1,67 @@
 .settings-page {
   max-width: 1120px;
-  margin: 38px auto;
-  padding-bottom: 70px;
+  margin: 34px auto;
+  padding: 0 32px 64px;
+}
+.settings-page > .header {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: var(--shadow-sm);
 }
 .settings-page h1 {
-  font-size: 26px;
-  letter-spacing: 0;
+  font-size: 24px;
+  letter-spacing: -0.01em;
 }
 .intro {
-  max-width: 720px;
-  line-height: 1.9;
-  margin-bottom: 32px;
+  line-height: 1.75;
+  margin: 18px 0 24px;
+  padding: 13px 18px;
+  background: linear-gradient(135deg, #eaf2fe 0%, #f4f8ff 100%);
+  border: 1px solid #d2e2f9;
+  border-left: 4px solid var(--blue);
+  border-radius: 11px;
+  color: var(--blue-ink);
+  font-size: 13.5px;
 }
 .setup-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 270px;
-  gap: 52px;
+  grid-template-columns: minmax(0, 1fr) 304px;
+  gap: 28px;
   align-items: start;
 }
 .setup-main {
   min-width: 0;
 }
 .setup-step {
-  border-top: 0;
-  border-bottom: 1px solid var(--line);
-  padding: 22px 0 28px;
-  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 22px 26px 24px;
+  margin-bottom: 20px;
 }
 .setup-step legend {
-  font-size: 18px;
+  font-size: 17px;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
+  padding-bottom: 14px;
+  margin-bottom: 18px;
 }
 .step-number {
   display: inline-grid;
   place-items: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 50%;
-  background: var(--blue);
-  color: white;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb 0%, #17366e 100%);
+  color: #ffffff;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 700;
+  box-shadow: 0 2px 5px rgba(29, 78, 216, 0.22);
+  flex-shrink: 0;
 }
 .setup-step .field > label {
   display: block;
@@ -54,83 +73,104 @@
 }
 .model-id {
   font-size: 13px;
-  background: #f9fbfe !important;
+  font-family: 'JetBrains Mono', 'Cascadia Mono', 'Consolas', monospace;
+  background: var(--surface-subtle) !important;
 }
 .step-description {
   color: var(--muted);
   font-size: 13px;
-  margin: 2px 0 18px;
+  margin: 0 0 16px;
+  line-height: 1.65;
 }
 .connection-summary {
   position: sticky;
-  top: 26px;
-  border-left: 3px solid #b2c8e1;
-  padding: 4px 0 4px 24px;
+  top: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--blue);
+  border-radius: 14px;
+  padding: 22px 22px 20px;
+  box-shadow: var(--shadow-md);
   overflow-wrap: anywhere;
 }
 .summary-heading {
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 700;
-  margin-bottom: 10px;
+  color: var(--ink);
+  margin-bottom: 6px;
 }
 .connection-summary > p {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
+  margin-bottom: 16px;
 }
 .connection-summary dl {
-  margin: 26px 0;
+  margin: 16px 0;
+  padding: 13px 14px;
+  background: var(--surface-subtle);
+  border: 1px solid #e3ecf8;
+  border-radius: 11px;
 }
 .connection-summary dt {
   color: var(--muted);
-  font-size: 12px;
-  margin-top: 20px;
+  font-size: 11.5px;
+  font-weight: 500;
+  margin-top: 12px;
+}
+.connection-summary dt:first-child {
+  margin-top: 0;
 }
 .connection-summary dd {
-  margin: 4px 0 0;
+  margin: 3px 0 0;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
+  color: var(--blue-ink);
+  font-family:
+    'JetBrains Mono', 'Cascadia Mono', 'Consolas', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 .summary-note {
-  font-size: 13px;
-  line-height: 1.9;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink-soft);
   border-top: 1px solid var(--line);
-  padding-top: 18px;
+  padding-top: 14px;
 }
 .connection-summary .help {
-  padding: 0;
-  background: none;
-  font-size: 12px;
-  line-height: 1.9;
-  margin-top: 16px;
+  padding: 10px 12px;
+  background: #f0f5fd;
+  border: 1px solid #d8e5f8;
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  margin-top: 14px;
 }
 .behavior-heading {
-  margin: 36px 0 26px;
+  margin: 34px 0 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 15px;
 }
 .behavior-heading h2 {
-  font-size: 20px;
+  font-size: 19px;
 }
 .behavior-heading p {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .settings-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
   display: flex;
   gap: 18px;
   align-items: center;
-  box-shadow: 0 -8px 18px #f4f7fb;
+  margin-top: 20px;
 }
 .settings-actions .message {
   margin: 0;
 }
 .setup-step .message {
-  line-height: 1.8;
+  line-height: 1.75;
   overflow-wrap: anywhere;
 }
 #catalogStatus {
@@ -149,16 +189,13 @@
   }
   .connection-summary {
     position: static;
-    border-left: 0;
-    border-top: 1px solid var(--line);
-    padding: 20px 0;
   }
   .connection-summary dl {
     display: grid;
-    grid-template-columns: 100px minmax(0, 1fr);
+    grid-template-columns: 92px minmax(0, 1fr);
     align-items: baseline;
-    gap: 10px;
-    margin: 16px 0;
+    gap: 8px 12px;
+    margin: 14px 0;
   }
   .connection-summary dt {
     margin: 0;
@@ -166,11 +203,8 @@
   .connection-summary dd {
     margin: 0;
   }
-  .connection-summary .help {
-    max-width: 600px;
-  }
   .settings-page h1 {
-    font-size: 23px;
+    font-size: 21px;
   }
 }
 @media (max-width: 500px) {
@@ -178,18 +212,23 @@
     display: block;
   }
   .behavior-heading p {
-    margin-top: 7px;
+    margin-top: 6px;
   }
   .settings-actions {
     display: block;
   }
   .settings-actions .message {
-    margin-top: 8px;
+    margin-top: 10px;
   }
-  .setup-step .actions button {
+  .setup-step .actions button,
+  .settings-actions button {
     width: 100%;
   }
   .settings-page {
-    padding-inline: 18px;
+    padding-inline: 16px;
+  }
+  .settings-page > .header,
+  .setup-step {
+    padding: 16px;
   }
 }

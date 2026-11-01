@@ -8,6 +8,7 @@ export const DEFAULTS = Object.freeze({
   autoPlay: true,
   muted: true,
   autoNext: true,
+  autoRefresh: true,
   keepActive: true,
   autoRead: true,
   autoSolve: true,
@@ -24,6 +25,7 @@ export const DEFAULTS = Object.freeze({
   maxCalls: 100,
   requestGap: 2500,
   readingInterval: 15000,
+  stallTimeout: 45000,
   questionSelector: '.TiMu, .question-item, .questionLi, [data-question]',
   nextSelector: '#prevNextFocusNext, #nextChapter, .nextChapter, .next-chapter, [data-study-next]',
 });
@@ -74,7 +76,7 @@ export function validModelId(value) {
   return typeof value === 'string' && /^[a-zA-Z0-9_.:/@+-]{1,200}$/.test(value);
 }
 export function chatOptions(settings, limit) {
-  const reasoning = /^(?:o[134](?:-|$)|gpt-[56](?:[.-]|$))/.test(settings.model);
+  const reasoning = /(?:^|\/)(?:o[134](?:-|$)|gpt-[56](?:[.-]|$))/i.test(settings.model);
   return {
     ...(reasoning ? { max_completion_tokens: limit } : { temperature: 0.1, max_tokens: limit }),
     ...(settings.jsonMode !== false ? { response_format: { type: 'json_object' } } : {}),
@@ -98,6 +100,7 @@ export function normalizeSettings(input = {}) {
     'autoPlay',
     'muted',
     'autoNext',
+    'autoRefresh',
     'keepActive',
     'autoRead',
     'autoSolve',
@@ -120,6 +123,7 @@ export function normalizeSettings(input = {}) {
     .slice(0, 200);
   s.requestGap = Math.min(30000, Math.max(2000, Number(s.requestGap) || 2500));
   s.readingInterval = Math.min(60000, Math.max(1000, Number(s.readingInterval) || 15000));
+  s.stallTimeout = Math.min(300000, Math.max(15000, Number(s.stallTimeout) || 45000));
   for (const key of ['questionSelector', 'nextSelector']) {
     s[key] = String(s[key] || DEFAULTS[key]).trim();
     if (s[key].length > 1000) throw new Error('页面选择器过长。');
@@ -280,6 +284,13 @@ export function planRequest(settings, snapshot, image) {
   };
 }
 
+const booleanMeaning = (value) =>
+  /^(?:正确|对|是|true|t|yes|√|✓|1)$/i.test(String(value || '').trim())
+    ? 'true'
+    : /^(?:错误|错|否|false|f|no|×|✗|✕|0)$/i.test(String(value || '').trim())
+      ? 'false'
+      : '';
+
 export function parseAnswer(data, question) {
   if (data?.choices?.[0]?.finish_reason === 'length')
     throw new Error('模型输出被截断，请减少题目长度或更换模型。');
@@ -302,11 +313,22 @@ export function parseAnswer(data, question) {
     !parsed.answers.every((x) => typeof x === 'string')
   )
     throw new Error('模型答案格式不完整。');
-  const answers = parsed.answers.map((x) => x.trim()).filter(Boolean);
+  let answers = parsed.answers.map((x) => x.trim()).filter(Boolean);
   let confidence =
     typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
       ? Math.max(0, Math.min(1, parsed.confidence))
       : 0;
+  if (question.type === 'boolean') {
+    answers = answers.map((answer) => {
+      const meaning = booleanMeaning(answer);
+      if (!meaning) return answer;
+      if (!question.options.length) return meaning === 'true' ? '正确' : '错误';
+      const matched = question.options.find((o) => booleanMeaning(o.text) === meaning);
+      if (matched) return matched.label;
+      if (question.options.length === 2) return question.options[meaning === 'true' ? 0 : 1].label;
+      return answer;
+    });
+  }
   if (question.options.length) {
     const allowed = question.options.map((o) => o.label);
     if (!answers.every((a) => allowed.includes(a))) confidence = 0;

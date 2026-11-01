@@ -59,8 +59,9 @@ def extension_payload(root):
         raise ValueError('Expected Manifest V3')
     if not all(part.isdigit() for part in manifest['version'].split('.')):
         raise ValueError('Invalid extension version')
-    payload['README.md'] = (root / 'README.md').read_bytes()
-    for name in ['CONFIGURATION.md', 'PRIVACY.md', 'TROUBLESHOOTING.md']:
+    for name in ['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md']:
+        payload[name] = (root / name).read_bytes()
+    for name in DOC_FILES:
         payload['docs/' + name] = (root / 'docs' / name).read_bytes()
     if (root / 'LICENSE').is_file():
         payload['LICENSE'] = (root / 'LICENSE').read_bytes()

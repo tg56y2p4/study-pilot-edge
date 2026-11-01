@@ -46,9 +46,11 @@ fixtures = {
     '/agent': page_html('<p>《数学入门》课程已打开。请点击“进入本节”继续学习。</p><button data-study-action onclick="document.body.dataset.operated=\'yes\';this.remove()">进入本节</button>'),
     '/confirm': page_html('<video controls src="/sample.wav"></video>'+QUESTION+'''<button onclick="document.getElementById('confirmation').hidden=false">提交答案</button><div id="confirmation" role="dialog" hidden>确认提交本次章节练习？<button onclick="document.querySelector('.TiMu').remove();document.getElementById('confirmation').remove();document.getElementById('success').hidden=false">确认提交</button></div><p id="success" role="status" data-study-submitted hidden>提交成功</p><a data-study-next href="/next">下一章节</a>'''),
     '/types': page_html('''<div class="TiMu"><h3 class="Zy_TItle">【多选题】选择两个偶数</h3><ul><li><label><input type="checkbox" name="multi">A. 2</label></li><li><label><input type="checkbox" name="multi">B. 3</label></li><li><label><input type="checkbox" name="multi">C. 4</label></li></ul></div>
+<div class="TiMu"><h3 class="Zy_TItle">选择两个偶数（自定义多选框）</h3><ul class="Zy_ulTop"><li onclick="this.querySelector('.num_option_dx').classList.toggle('check_answer')"><span class="num_option_dx">A</span> 2</li><li onclick="this.querySelector('.num_option_dx').classList.toggle('check_answer')"><span class="num_option_dx">B</span> 3</li><li onclick="this.querySelector('.num_option_dx').classList.toggle('check_answer')"><span class="num_option_dx">C</span> 4</li></ul></div>
 <div class="TiMu"><h3 class="Zy_TItle">【判断题】地球绕太阳运行</h3><label><input type="radio" name="judge">A. 正确</label><label><input type="radio" name="judge">B. 错误</label></div>
 <div class="TiMu"><h3 class="Zy_TItle">【填空题】依次填写 1+1 与 2+2</h3><input type="text"><input type="text"></div>
-<div class="TiMu"><h3 class="Zy_TItle">【简答题】解释加法的含义</h3><textarea></textarea></div>'''),
+<div class="TiMu"><h3 class="Zy_TItle">【简答题】解释加法的含义</h3><textarea id="plain-short"></textarea></div>
+<div class="TiMu"><h3 class="Zy_TItle">【简答题】富文本解释加法的含义</h3><textarea style="display:none"></textarea><iframe id="ueditor_0" srcdoc="<!doctype html><html><body contenteditable='true'></body></html>" style="width:300px;height:80px"></iframe></div>'''),
     '/submit': page_html(QUESTION + '<button id="submit" onclick="document.body.dataset.submitted=\'yes\';this.remove()">提交答案</button>'),
     '/existing': page_html(QUESTION.replace('value="A"','value="A" checked')),
     '/secret-font': page_html('''<div class="TiMu"><h3 class="Zy_TItle font-cxsecret">【单选题】特殊字体壈壋</h3><ul class="Zy_ulTop" aria-hidden="true"><li onclick="this.parentNode.querySelectorAll('.num_option').forEach(e=>e.classList.remove('check_answer'));this.querySelector('.num_option').classList.add('check_answer')"><span class="num_option">A</span> 3</li><li onclick="this.parentNode.querySelectorAll('.num_option').forEach(e=>e.classList.remove('check_answer'));this.querySelector('.num_option').classList.add('check_answer')"><span class="num_option">B</span> 4</li></ul></div>'''),
@@ -59,7 +61,20 @@ fixtures = {
     '/outer-questions': page_html(QUESTION+'''<a onclick="parent.document.getElementById('confirmation').hidden=false">提交</a>'''),
     '/graded': page_html('<div class="testTit_status testTit_status_complete">已完成</div><p>第1次作答 本次成绩100分</p><div class="TiMu"><h3 class="Zy_TItle">已经批阅的题目</h3><p>我的答案：A</p></div>'),
     '/completed-video': page_html('<div class="ans-job-icon ans-job-video" aria-label="任务点已完成"></div><video controls src="/long.wav"></video><a data-study-next href="/next">下一章节</a>'),
+    '/all-done-catalog': page_html('<input id="chapterIdid" type="hidden" value="101"><div id="coursetree"><div id="cur101" class="posCatalog_active"><span class="icon_Completed"></span><a class="clicktitle">1.1 第一章</a></div><div id="cur102"><span class="icon_Completed"></span><a class="clicktitle">1.2 第二章</a></div></div>'),
+    '/video-quiz': page_html('<iframe src="/video-quiz-frame"></iframe><a data-study-next href="/next">下一章节</a>'),
+    '/video-quiz-frame': page_html('''<video id="v" controls src="/sample.wav" onplay="if(!window.quizDone){this.pause();document.getElementById('vquiz').hidden=false}"></video>
+<div id="vquiz" style="border:1px solid #ccc;padding:12px;background:#fff" hidden>
+  <div>判断题</div>
+  <div>九格算术，中间数字为最小数才能够横竖、交叉和为相等。</div>
+  <div>
+    <div class="vq-opt" onclick="this.classList.add('on')">A、对</div>
+    <div class="vq-opt" onclick="this.classList.add('on')">B、错</div>
+  </div>
+  <div class="tkTopic_btn" style="display:inline-block;padding:6px 14px;background:#3b82f6;color:#fff;cursor:pointer" onclick="if(document.querySelector('.vq-opt.on')){this.textContent='继续';this.onclick=()=>{window.quizDone=true;document.getElementById('vquiz').remove();document.getElementById('v').play()}}">提交</div>
+</div>'''),
 }
+stalled_hits = 0
 audio = io.BytesIO()
 with wave.open(audio,'wb') as stream:
     stream.setparams((1,2,8000,0,'NONE','not compressed'))
@@ -70,10 +85,15 @@ with wave.open(long_audio,'wb') as stream:
     stream.writeframes(struct.pack('<h',0)*8000*30)
 
 def fixture_route(route):
+    global stalled_hits
     path = urlparse(route.request.url).path
     if path == '/sample.wav': route.fulfill(status=200, content_type='audio/wav', body=audio.getvalue())
     elif path == '/long.wav': route.fulfill(status=200, content_type='audio/wav', body=long_audio.getvalue())
     elif path == '/pixel.svg': route.fulfill(status=200, content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="60" height="40"><text y="20">?</text></svg>')
+    elif path == '/stalled-reload':
+        stalled_hits += 1
+        body = page_html('<input id="chapterIdid" type="hidden" value="202"><p>首次加载卡住的空白章节</p>') if stalled_hits == 1 else page_html('<input id="chapterIdid" type="hidden" value="202"><div class="ans-job-icon ans-job-doc" aria-label="任务点已完成"></div><div id="coursetree"><div id="cur202" class="posCatalog_active"><a class="clicktitle">1.1 恢复章节</a></div></div>')
+        route.fulfill(status=200, content_type='text/html; charset=utf-8', body=body)
     else: route.fulfill(status=200, content_type='text/html; charset=utf-8', body=fixtures.get(path,page_html('<p>fixture</p>')))
 
 checks=[]
@@ -200,14 +220,18 @@ with sync_playwright() as p:
     record('Cross-tab cached answers appear in results without another API request');stop(tab)
 
     page,tab=course('/types');start(tab)
-    until(lambda: page.locator('textarea').input_value()!='')
+    until(lambda: page.frame_locator('#ueditor_0').locator('body').inner_text()!='')
+    assert page.locator('#plain-short').input_value()!=''
     assert page.locator('input[name="multi"]').nth(0).is_checked()
     assert not page.locator('input[name="multi"]').nth(1).is_checked()
     assert page.locator('input[name="multi"]').nth(2).is_checked()
+    assert 'check_answer' in (page.locator('.num_option_dx').nth(0).get_attribute('class') or '')
+    assert 'check_answer' not in (page.locator('.num_option_dx').nth(1).get_attribute('class') or '')
+    assert 'check_answer' in (page.locator('.num_option_dx').nth(2).get_attribute('class') or '')
     assert page.locator('input[name="judge"]').nth(0).is_checked()
     assert page.locator('input[type="text"]').nth(0).input_value()=='2'
     assert page.locator('input[type="text"]').nth(1).input_value()=='4'
-    record('Multiple choice, boolean, two blanks and short answer fill correctly');stop(tab)
+    record('Multiple choice (native & custom .num_option_dx), boolean, two blanks, textarea and UEditor iframe fill correctly');stop(tab)
 
     page,tab=course('/low');start(tab)
     until(lambda: len(status(tab)['results'])==1)
@@ -299,10 +323,26 @@ with sync_playwright() as p:
     page.locator('#arrived').wait_for(timeout=20000)
     record('Real media natural playback in iframe reaches ended and advances chapter');stop(tab)
 
+    page,tab=course('/video-quiz');start(tab)
+    page.locator('#arrived').wait_for(timeout=25000)
+    assert status(tab)['calls']==1
+    record('Chaoxing in-video popup quiz detected by polling, answered, submitted, and video resumes to next chapter');stop(tab)
+
     page,tab=course('/completed-video');start(tab)
     page.locator('#arrived').wait_for(timeout=12000)
     assert any('平台已标记' in row['text'] for row in status(tab)['logs'])
     record('Platform-completed video tasks advance without replaying the full video');stop(tab)
+
+    page,tab=course('/all-done-catalog');start(tab)
+    until(lambda:status(tab).get('completed') and not status(tab)['running'],timeout=12000)
+    assert any('全部章节均已完成' in row['text'] for row in status(tab)['logs'])
+    record('Self-check finishes immediately when all catalog chapters are already completed');stop(tab)
+
+    save(stallTimeout=15000,autoRefresh=True)
+    page,tab=course('/stalled-reload');start(tab)
+    until(lambda:status(tab).get('completed') and not status(tab)['running'],timeout=30000)
+    assert stalled_hits>=2 and any('正在自动刷新页面恢复' in row['text'] for row in status(tab)['logs'])
+    record('Unresponsive page triggers self-check auto-refresh and resumes to completion');stop(tab);save(stallTimeout=45000)
 
     page,tab=course('/mixed');start(tab)
     frame=page.frame(url=HOST+'/mixed-frame')

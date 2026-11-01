@@ -102,11 +102,13 @@ def main():
                         settings['maxCalls'] = 1
                     msg('KP_SAVE_SETTINGS', settings=settings)
                     worker.evaluate('(name)=>{stabilityCase=name;requests={}}', name)
+                    previous_tabs = options.evaluate('()=>chrome.tabs.query({}).then(ts=>ts.map(t=>t.id))')
                     page = context.new_page()
+                    tab = options.evaluate('(previous)=>chrome.tabs.query({}).then(ts=>ts.find(t=>!previous.includes(t.id)).id)', previous_tabs)
                     mooc = name.startswith('mooc-') or name == 'stale-finish'
                     url = ('https://www.icourse163.org/learn/' if mooc else 'https://mooc1.chaoxing.com/') + name
-                    page.goto(url)
-                    tab = options.evaluate('(u)=>chrome.tabs.query({}).then(ts=>ts.find(t=>t.url===u).id)', page.url)
+                    # Seed before navigation: content scripts serialize their state writes,
+                    # while a test-only storage write after page load can race KP_CONTEXT.
                     if mooc and name not in ['mooc-all-done', 'mooc-accordion']:
                         state = msg('KP_STATUS', tabId=tab)
                         state.pop('settings', None)
@@ -115,6 +117,7 @@ def main():
                         if name == 'mooc-pending':
                             state['moocManualTasks'] = [{'course': url, 'key': 'unit:discussion', 'title': '本人讨论', 'reason': '需本人处理'}]
                         options.evaluate('({id,s})=>chrome.storage.session.set({["tab:"+id]:s})', {'id': tab, 's': state})
+                    page.goto(url)
                     msg('KP_START', tabId=tab)
                     if name.startswith('unsaved'):
                         frame = page if name == 'unsaved' else page.frame(url='https://mooc1.chaoxing.com/frame-question')
@@ -148,7 +151,9 @@ def main():
                     elif name == 'mooc-pending':
                         until(lambda: not msg('KP_STATUS', tabId=tab)['running'])
                         state = msg('KP_STATUS', tabId=tab)
-                        assert not state.get('completed') and len(state['moocManualTasks']) == 1
+                        assert not state.get('completed') and len(state.get('moocManualTasks', [])) == 1, (
+                            f"Pending task must remain: completed={state.get('completed')}, "
+                            f"pending={len(state.get('moocManualTasks', []))}")
                     elif name == 'stale-finish':
                         generation = msg('KP_STATUS', tabId=tab)['generation']
                         options.evaluate('({id,g})=>chrome.scripting.executeScript({target:{tabId:id},func:g=>chrome.runtime.sendMessage({type:"KP_MOOC_FINISH",generation:g,allLearned:false}),args:[g]})', {'id': tab, 'g': generation})
@@ -183,7 +188,9 @@ def main():
                     results.append({'case': name, 'passed': True})
                     print('PASS:', name, flush=True)
                 except Exception as error:
-                    results.append({'case': name, 'passed': False, 'error': str(error).splitlines()[0]})
+                    error_lines = str(error).splitlines()
+                    results.append({'case': name, 'passed': False,
+                        'error': error_lines[0] if error_lines else type(error).__name__})
                     print('FAIL:', json.dumps(results[-1]), flush=True)
                 finally:
                     if tab is not None:

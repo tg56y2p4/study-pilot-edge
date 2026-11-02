@@ -12,7 +12,22 @@ with sync_playwright() as p:
  context=p.chromium.launch_persistent_context(str(profile),headless=True,**browser_options(),args=[f'--disable-extensions-except={ext}',f'--load-extension={ext}'])
  worker=context.service_workers[0] if context.service_workers else context.wait_for_event('serviceworker')
  worker.evaluate('''()=>{globalThis.requests=[];globalThis.mode='standard';globalThis.cancelled=0;globalThis.fetch=async(url,opts)=>{const body=opts.body?JSON.parse(opts.body):null;requests.push({url,method:opts.method,model:body?.model,hasKey:!!opts.headers.Authorization});if(opts.method==='GET'){if(mode==='slow')await new Promise((resolve,reject)=>{const timer=setTimeout(resolve,1800);opts.signal.addEventListener('abort',()=>{clearTimeout(timer);cancelled++;reject(new DOMException('Aborted','AbortError'));},{once:true});});if(mode==='unsupported')return new Response('{}',{status:404});if(mode==='unauthorized')return new Response(JSON.stringify({error:{message:'fixture-private-key-not-for-display'}}),{status:401});if(mode==='empty')return new Response('{"data":[]}');if(mode==='native')return new Response(JSON.stringify({output:{total:1,models:[{model:'native-vision',capabilities:['TG','VU']}]}}));return new Response(JSON.stringify({data:[{id:'text-standard',input_modalities:['text'],output_modalities:['text']},{id:'vision-opaque',input_modalities:['text','image'],output_modalities:['text']},{id:'unknown-capability'},{id:'image-only',output_modalities:['image']},{id:'text-standard'}]}));}const content=Array.isArray(body.messages[1].content)?{answers:['4'],confidence:1,explanation:'4'}:{ok:true};return new Response(JSON.stringify({model:body.model,choices:[{message:{content:JSON.stringify(content)}}]}));};}''')
- page=context.new_page();page.goto('chrome-extension://'+worker.url.split('/')[2]+'/options.html');page.wait_for_load_state('networkidle')
+ # Keep a fully intercepted request open while checking actual UI initialization.
+ # Browser network idleness is unrelated to whether the settings page is usable.
+ readiness_pending=[]
+ readiness_url='https://model-readiness.example.test/hold'
+ context.route(readiness_url,lambda request:readiness_pending.append(request))
+ page=context.new_page()
+ page.add_init_script("fetch('https://model-readiness.example.test/hold',{credentials:'omit'}).catch(()=>{})")
+ page.goto('chrome-extension://'+worker.url.split('/')[2]+'/options.html')
+ expect(page.locator('#apiKey')).to_be_visible(timeout=30000)
+ expect(page.locator('#keyStatus')).to_contain_text('请填写',timeout=30000)
+ for _ in range(100):
+  if readiness_pending:break
+  page.wait_for_timeout(50)
+ assert readiness_pending,'The offline pending-connection regression must be exercised'
+ for request in readiness_pending:request.abort()
+ context.unroute(readiness_url)
  errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
  def msg(kind,**extra):
   r=page.evaluate('(m)=>chrome.runtime.sendMessage(m)',{'type':kind,**extra});assert r['ok'],r;return r['data']

@@ -1624,7 +1624,9 @@ async function handoffMooc(childId, tab) {
     moved.openIntent = null;
     moved.pageStarted = Date.now();
     log(moved, '已接管新打开的MOOC课程标签。');
-    await saveState(childId, moved);
+    // The new page sends KP_HELLO/KP_CONTEXT while its transfer is still in flight.
+    // Serialize with those writes so an earlier stopped snapshot cannot undo the handoff.
+    await queue(childId, () => saveState(childId, moved));
     moocChildren.delete(childId);
     try {
       await chrome.scripting.executeScript({

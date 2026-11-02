@@ -126,7 +126,7 @@
     'checked' in node
       ? node.checked
       : node.matches(
-          '.checked, .selected, .check_answer, .on, .cur, .active, .is-checked, .tkItem_li_cur, .ans-videoquiz-opt-checked, [aria-checked="true"], [aria-selected="true"], [data-keban-selected="true"]'
+          '.checked, .selected, .check_answer, .on, .cur, .active, .is-checked, .tkItem_li_cur, .ans-videoquiz-opt-checked, [aria-checked="true"], [aria-selected="true"]'
         ) ||
         !!node.querySelector(
           '.num_option.check_answer, .num_option_dx.check_answer, .check_answer, .on, .cur, .active, .is-checked, input:checked'
@@ -217,14 +217,49 @@
       await send('KP_READING_RETURN', { failed: false });
   }
   const fieldValue = (el) => el.value ?? el.innerText ?? el.textContent ?? '';
-  function optionText(node, isInput) {
-    const wrapper = isInput
-      ? node.labels?.[0] ||
-        node.closest(
-          'li, label, .answer-item, .option, .answerOption, .tkItem_li, .ans-videoquiz-opt'
-        ) ||
-        node.parentElement
+  function optionWrapper(node, isInput) {
+    return isInput
+      ? [...(node.labels || [])].find(visible) ||
+          node.closest(
+            'li, label, .answer-item, .option, .answerOption, .tkItem_li, .ans-videoquiz-opt'
+          ) ||
+          (node.parentElement?.querySelectorAll('input[type="radio"],input[type="checkbox"]')
+            .length === 1
+            ? node.parentElement
+            : node)
       : node;
+  }
+  function orderOptions(nodes, isInput) {
+    const letters = nodes.map((node) => {
+      const wrapper = optionWrapper(node, isInput);
+      const text = clean(wrapper?.innerText || node.getAttribute('aria-label')).normalize('NFKC');
+      const printed = text.match(/^([A-Z])(?:\s*[.、:：)）]|\n|$)/i)?.[1];
+      const marker = clean(
+        wrapper?.querySelector('.num_option,.num_option_dx,[data-option-label]')?.textContent
+      );
+      return (
+        printed ||
+        (/^[A-Z]$/i.test(marker) ? marker : '') ||
+        (isInput && /^[A-Z]$/.test(node.value) ? node.value : '')
+      ).toUpperCase();
+    });
+    if (!letters.some(Boolean)) return { nodes, issue: '' };
+    const valid =
+      letters.every((letter) => /^[A-Z]$/.test(letter)) &&
+      new Set(letters).size === nodes.length &&
+      [...letters].sort().every((letter, index) => letter === String.fromCharCode(65 + index));
+    return valid
+      ? {
+          nodes: nodes
+            .map((node, index) => ({ node, letter: letters[index] }))
+            .sort((a, b) => a.letter.localeCompare(b.letter))
+            .map((item) => item.node),
+          issue: '',
+        }
+      : { nodes, issue: '选项字母缺失、重复或不连续，无法确认答案与控件的对应关系。' };
+  }
+  function optionText(node, isInput) {
+    const wrapper = optionWrapper(node, isInput);
     const raw = clean(
       wrapper?.innerText ||
         node.getAttribute?.('aria-label') ||
@@ -348,11 +383,13 @@
                 return p && p !== root && clean(p.innerText) === clean(el.innerText) ? p : el;
               })
               .filter((el, i, arr) => arr.indexOf(el) === i);
-      const optionNodes = choices.length
+      const unorderedOptions = choices.length
         ? choices
         : customOptions.length
           ? customOptions
           : labeledOptions;
+      const ordered = orderOptions(unorderedOptions, choices.length > 0);
+      const optionNodes = ordered.nodes;
       const directFields = all(
         'textarea, input[type="text"], input:not([type]), [contenteditable="true"]',
         root
@@ -450,6 +487,7 @@
             .join('|')
         : '';
       const supported =
+        !ordered.issue &&
         text.length >= 2 &&
         (!hasImages || current?.settings.useVision) &&
         (options.length > 0 || fields.length > 0);
@@ -463,6 +501,7 @@
         options,
         fields,
         optionNodes,
+        optionIssue: ordered.issue,
         supported,
         answered,
         inVideoQuiz,
@@ -472,9 +511,9 @@
       };
     });
   }
-  function applyAnswer(q, answer, replaceRejected = false) {
+  async function applyAnswer(q, answer, replaceRejected = false) {
     if (!q.root.isConnected || !q.supported || !answerReliable(answer)) return false;
-    if (q.answered && !replaceRejected) return true;
+    if (q.answered && !replaceRejected) return matchesAnswer(q, answer);
     if (q.optionNodes.length) {
       const indexes = answer.answers.map((a) => a.charCodeAt(0) - 65);
       if (
@@ -483,27 +522,47 @@
       )
         return false;
       if (q.type !== 'multiple' && indexes.length !== 1) return false;
-      q.optionNodes.forEach((node, index) => {
+      const generation = current.generation;
+      const running = current.running;
+      const settled = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        const fresh = await send('KP_STATE');
+        return fresh.generation === generation && (!running || fresh.running) && q.root.isConnected;
+      };
+      for (const [index, node] of q.optionNodes.entries()) {
         const want = indexes.includes(index);
+        // A single-choice click deselects its siblings. Never click them to clear them.
+        if (q.type !== 'multiple' && !want) continue;
         const selected = selectedOption(node);
         if (selected !== want) {
+          delete node.dataset.kebanSelected;
           node.click();
-          if ('checked' in node && node.checked !== want) {
+          if (!(await settled())) return false;
+          if (selectedOption(node) !== want && 'checked' in node) {
             const wrapper =
               node.labels?.[0] ||
               node.closest('label, li, .tkItem_li, .ans-videoquiz-opt, .answer-item');
-            wrapper?.click();
-          } else if (!('checked' in node)) {
+            if (wrapper && wrapper !== node) {
+              wrapper.click();
+              if (!(await settled())) return false;
+            }
+          } else if (selectedOption(node) !== want && !('checked' in node)) {
             const inner = node.querySelector(
               'input[type="radio"], input[type="checkbox"], label, .num_option, .num_option_dx'
             );
-            if (inner && !selectedOption(node)) inner.click();
-            if (want) node.dataset.kebanSelected = 'true';
-            else delete node.dataset.kebanSelected;
+            if (inner) {
+              inner.click();
+              if (!(await settled())) return false;
+            }
           }
         }
-      });
-      return indexes.every((i) => selectedOption(q.optionNodes[i]));
+      }
+      if (!matchesAnswer(q, answer)) {
+        const reason = `选项点击未通过核对：解析答案 ${answer.answers.join('、')}，页面实际选择 ${selectedAnswers(q).join('、') || '未确认'}。已停止提交，请检查页面控件。`;
+        await send('KP_BLOCK', { reason });
+        throw new Error(reason);
+      }
+      return true;
     }
     if (!q.fields.length || q.fields.length !== answer.answers.length) return false;
     q.fields.forEach((field, index) => {
@@ -701,8 +760,23 @@
   }
   function displayResult(result) {
     lastResult = result;
-    if (hudAnswer)
-      hudAnswer.textContent = `${result.text}\n\n答案：${result.answers.join('、') || '待确认'}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n${result.reviewIssue || result.review?.reason || ''}\n${(result.review?.stages || []).map((stage) => `${stage.model} · ${stage.label || stage.phase}：${stage.error || (stage.answers || []).join('、') + '（' + Math.round((stage.confidence || 0) * 100) + '%）'}`).join('\n')}\n\n${result.explanation}`;
+    if (hudAnswer) {
+      const candidates = inspectQuestions().filter(
+        (q) => q.text.slice(0, 500) === result.text.slice(0, 500)
+      );
+      const frameSelections = Object.values(current?.frames || {})
+        .filter((frame) => Date.now() - frame.time < 10000)
+        .flatMap((frame) => frame.selections || [])
+        .filter((selection) => selection.questionId === result.questionId);
+      const actual =
+        candidates.length === 1
+          ? selectedAnswers(candidates[0]).join('、') || '未检测到选中项'
+          : frameSelections.length === 1
+            ? frameSelections[0].answers.join('、') || '未检测到选中项'
+            : '当前页面无法核对';
+      const label = current && answerReliable(result) ? '解析答案' : '候选答案（未通过复核）';
+      hudAnswer.textContent = `${result.text}\n\n${label}：${result.answers.join('、') || '待确认'}\n页面当前选择：${actual}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n${result.reviewIssue || result.review?.reason || ''}\n${(result.review?.stages || []).map((stage) => `${stage.model} · ${stage.label || stage.phase}：${stage.error || (stage.answers || []).join('、') + '（' + Math.round((stage.confidence || 0) * 100) + '%）'}`).join('\n')}\n\n${result.explanation}`;
+    }
   }
   async function blockIfNeeded() {
     const captcha = all(
@@ -1555,6 +1629,7 @@
       }
       makeHud();
       renderPending();
+      if (lastResult) displayResult(lastResult);
       if (hudBadge) hudBadge.textContent = current.running ? '托管中' : '已停止';
       if (current.blocked && hudStatus) hudStatus.textContent = current.blocked;
       if (await blockIfNeeded()) return;
@@ -1635,6 +1710,10 @@
       let filled = 0;
       for (let q of questions) {
         if (!current.running && !manual && !fillOnce) break;
+        if (q.optionIssue) {
+          await send('KP_BLOCK', { reason: q.optionIssue });
+          return;
+        }
         const key = questionKey(q);
         const questionId = await questionDigest(q);
         const feedback = current.answerFeedback?.find((entry) => entry.questionId === questionId);
@@ -1712,7 +1791,7 @@
           )
             break;
           answers.set(key, answer);
-          displayResult({ text: q.text, ...answer });
+          displayResult({ text: q.text, ...answer, questionId });
           q = inspectQuestions().find((candidate) => questionKey(candidate) === key);
           if (!q) continue;
         }
@@ -1721,7 +1800,7 @@
           const replaceRejected =
             previousAnswer &&
             answerSignature(selectedAnswers(q), q.type) === answerSignature(previousAnswer, q.type);
-          if (applyAnswer(q, answer, !!replaceRejected)) {
+          if (await applyAnswer(q, answer, !!replaceRejected)) {
             filled++;
             await send('KP_LOG', { text: `已填写：${q.text.slice(0, 45)}` });
           }
@@ -1729,6 +1808,7 @@
       }
       // Re-read the DOM: only actually selected/written fields count as resolved.
       questions = isSubmissionConfirmed() ? [] : inspectQuestions();
+      if (lastResult) displayResult(lastResult);
       const remaining = questions.filter((q) => !q.answered).length;
       const incomplete = questions.some((q) => !q.supported && !q.answered);
       const reviewReason = questions.some(
@@ -1755,6 +1835,15 @@
           questions: questions.length,
           pending: remaining,
           completed: submissionConfirmed,
+          selections: await Promise.all(
+            questions
+              .filter((q) => q.optionNodes.length)
+              .slice(0, 20)
+              .map(async (q) => ({
+                questionId: await questionDigest(q),
+                answers: selectedAnswers(q),
+              }))
+          ),
           waiting:
             videoReport.waiting ||
             reviewReason ||
@@ -1863,6 +1952,22 @@
             })),
           });
           if (intent.allowed) {
+            const beforeSubmit = await send('KP_STATE');
+            if (!beforeSubmit.running || beforeSubmit.generation !== runGeneration) return;
+            const actualQuestions = inspectQuestions();
+            if (
+              !button.isConnected ||
+              !visible(button) ||
+              button.disabled ||
+              JSON.stringify(actualQuestions.map((q) => [questionKey(q), selectedAnswers(q)])) !==
+                signature ||
+              !actualQuestions.every((q) => matchesAnswer(q, answers.get(questionKey(q))))
+            ) {
+              await send('KP_BLOCK', {
+                reason: '提交前选项状态发生变化，已停止提交并保留页面当前选择，请核对后继续。',
+              });
+              return;
+            }
             const entry = {
               time: Date.now(),
               attempts: (previous?.attempts || 0) + 1,
@@ -1871,6 +1976,9 @@
             };
             submitted.set(signature, entry);
             submitClickedAt = Date.now();
+            entry.errorBaseline = wrongFeedbackSignals().signature;
+            lastSubmitted = entry;
+            button.click();
             await send('KP_LOG', {
               text: inVideoQuiz
                 ? '已提交视频随堂测验弹窗答案。'
@@ -1878,9 +1986,6 @@
                   ? '练习尚未确认完成，正在重试提交。'
                   : '已点击本页练习的提交按钮。',
             });
-            entry.errorBaseline = wrongFeedbackSignals().signature;
-            lastSubmitted = entry;
-            button.click();
           } else if (intent.reason) await send('KP_BLOCK', { reason: intent.reason });
         }
       }
@@ -1916,6 +2021,7 @@
         hudStatus.textContent = '正在验证下一节是否加载，未生效将自动重试。';
       await checkStall(courseStatus(videoReport));
     } catch (error) {
+      if (lastResult) displayResult(lastResult);
       showError(error);
     } finally {
       busy = false;

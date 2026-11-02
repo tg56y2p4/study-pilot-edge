@@ -60,8 +60,22 @@ async function refresh() {
     : '';
   if (latest) {
     $('question').textContent = latest.text;
-    $('answer').textContent = latest.answers.join('、') || '需要复核';
+    const candidate =
+      latest.reviewIssue ||
+      latest.validationIssue ||
+      latest.uncertain ||
+      latest.platformRejected ||
+      latest.confidence < s.settings.minConfidence;
+    $('answer').textContent = candidate
+      ? `候选：${latest.answers.join('、') || '待确认'}（未通过复核）`
+      : latest.answers.join('、') || '需要复核';
+    const selection = frames
+      .flatMap((frame) => frame.selections || [])
+      .filter((item) => item.questionId === latest.questionId);
     $('explanation').textContent = [
+      selection.length === 1
+        ? `页面当前选择：${selection[0].answers.join('、') || '未检测到选中项'}`
+        : '',
       latest.validationIssue,
       latest.reviewIssue || latest.review?.reason,
       ...(latest.review?.stages || []).map(

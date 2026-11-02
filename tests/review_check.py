@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ['wrong-no-repeat', 'existing-error', 'high-self-check', 'low-assisted', 'uncertain', 'self-correction', 'disagreement-high',
     'disagreement', 'unresolved', 'wrong-repair', 'wrong-stubborn', 'stale-feedback', 'manual-edit',
     'budget', 'cancel', 'image', 'image-font', 'separate-service', 'helper-failure', 'batch-feedback',
-    'slow-frame', 'video-resume', 'malformed-primary', 'budget-change', 'key-race', 'ui-shared', 'ui-independent', 'ui-multiple']
+    'slow-frame', 'video-resume', 'malformed-primary', 'budget-change', 'key-race', 'ui-shared', 'ui-independent', 'ui-multiple', 'click-reversed-native', 'click-reversed-custom',
+    'click-correct-custom', 'click-no-proof', 'click-delayed-flip', 'click-before-submit', 'candidate-display', 'click-multiple-exact', 'click-duplicate-labels']
 BASE = '<!doctype html><meta charset=utf-8><style>body{font:18px Arial;padding:20px}label,button{display:block;padding:10px}</style>'
 QUESTION = '<div class=TiMu><h3 class=Zy_TItle>【判断题】离线样例中甲概念与乙概念完全相同。</h3><label><input type=radio name=q value=A>A.对</label><label><input type=radio name=q value=B>B.错</label></div>'
 
@@ -146,7 +147,25 @@ def main():
                 question = question.replace('</h3>', '<img src=/marker.svg></h3>')
             if name == 'image-font':
                 question = question.replace('class=TiMu', 'class="TiMu font-cxsecret"')
+            if name == 'click-reversed-native':
+                question = '<div class=TiMu><h3 class=Zy_TItle>【判断题】可见字母与DOM顺序不一致</h3><div style="display:flex;flex-direction:column"><label style="order:2"><input type=radio name=q value=1>B.错</label><label style="order:1"><input type=radio name=q value=0>A.对</label></div></div>'
+            if name in ['click-reversed-custom','click-correct-custom','click-no-proof']:
+                rows = ['B','A'] if name == 'click-reversed-custom' else ['A','B']
+                question = '<div class=TiMu><h3 class=Zy_TItle>【判断题】自定义选项准确性</h3>' + ''.join(
+                    '<div role=radio aria-checked=false data-choice="'+letter+'" onclick="choose(this)">'+letter+'、'+('对' if letter=='A' else '错')+'</div>' for letter in rows) + '</div>'
+                question += '<script>function choose(node){window.actualChoice=node.dataset.choice;'+('' if name=='click-no-proof' else "document.querySelectorAll('[role=radio]').forEach(el=>el.setAttribute('aria-checked',String(el===node)));")+'}</script>'
+            if name == 'click-delayed-flip':
+                question = question.replace('value=A',"""value=A onclick="setTimeout(()=>document.querySelector('input[value=B]').checked=true,80)""" + '"')
+            if name == 'candidate-display':question = question.replace('value=B','value=B checked')
+            if name == 'click-duplicate-labels':question = question.replace('B.错','A.错')
+            if name == 'click-multiple-exact':
+                question = '<div class=TiMu><h3 class=Zy_TItle>【多选题】只选择A和C</h3><ul class=Zy_ulTop>'+''.join('<li><span class=num_option_dx onclick="this.classList.toggle(&quot;check_answer&quot;)">'+letter+'</span> '+letter+'选项</li>' for letter in ['C','B','A'])+'</ul></div>'
+
             body = question + '<script>window.submissions=[]</script>'
+            if name.startswith('click-'):
+                body += """<button id=submit onclick="submissions.push(window.actualChoice||document.querySelector('input:checked')?.value)">提交</button>"""
+            if name == 'click-correct-custom':
+                body = '<div class=ans-videoquiz>'+body+"""<span id=feedback></span></div><script>document.getElementById('submit').onclick=()=>{submissions.push(actualChoice);if(actualChoice==='B')document.getElementById('feedback').textContent='回答错误';else{document.querySelector('.ans-videoquiz').remove();document.body.innerHTML+='<p data-study-submitted>提交成功</p>';}};</script>"""
             if name == 'existing-error':
                 body = '<div class=ans-videoquiz>'+question.replace('value=B','value=B checked')+'<span class=ans-videoquiz-error>回答错误</span><button onclick="submissions.push(1)">提交</button></div><script>window.submissions=[]</script>'
             if name.startswith('wrong-') or name in ['stale-feedback', 'manual-edit', 'video-resume']:
@@ -187,7 +206,8 @@ def main():
                 if(mode==='helper-failure'&&body.model.startsWith('helper-one'))return new Response('{"error":{"message":"fixture-provider-private"}}',{status:503});
                 if(mode==='malformed-primary'&&phase==='solve')return json({choices:[{message:{content:'not a JSON answer'}}],usage:{total_tokens:3}});
                 let choice='A',confidence=0.96,uncertain=false;
-                if(['wrong-no-repeat','wrong-repair','wrong-stubborn','stale-feedback','manual-edit','batch-feedback','video-resume'].includes(mode))choice=feedback?'A':'B';
+                if(['click-correct-custom','wrong-no-repeat','wrong-repair','wrong-stubborn','stale-feedback','manual-edit','batch-feedback','video-resume'].includes(mode))choice=feedback?'A':'B';
+                if(mode==='candidate-display'){choice=phase==='solve'?'B':'A';if(phase!=='assistant')confidence=undefined;}
                 if(mode==='wrong-stubborn')choice='B';
                 if(mode==='existing-error')choice='B';
                 if(phase==='solve'&&['low-assisted','disagreement','unresolved','budget','budget-change','image','image-font','separate-service','helper-failure','slow-frame'].includes(mode))confidence=0.85;
@@ -196,7 +216,7 @@ def main():
                 if(mode==='disagreement-high'&&phase==='self-check')choice='B';
                 if(['disagreement','unresolved'].includes(mode)&&phase==='assistant')choice='B';
                 if(mode==='disagreement'&&phase==='final')choice='B';
-                return json({choices:[{message:{content:JSON.stringify({answers:[choice],confidence,uncertain,explanation:'offline independent reasoning'})}}],usage:{total_tokens:3}});
+                return json({choices:[{message:{content:JSON.stringify({answers:mode==='click-multiple-exact'?['A','C']:[choice],confidence,uncertain,explanation:'offline independent reasoning'})}}],usage:{total_tokens:3}});
             }}''')
             options = context.new_page()
             options.goto(worker.url.rsplit('/',1)[0]+'/options.html')
@@ -223,7 +243,7 @@ def main():
                         reviewEnabled=name not in ['wrong-no-repeat','batch-feedback'], requestGap=2000, minConfidence=0.9, maxCalls=30,
                         reviewProfiles=[{'id':'one','model':'helper-one-'+name,'visionModel':'helper-vision-'+name}])
                     if name == 'budget': settings['maxCalls'] = 2
-                    if name == 'slow-frame': settings['autoSubmit'] = False
+                    if name in ['slow-frame','click-multiple-exact']: settings['autoSubmit'] = False
                     if name.startswith('ui-'):
                         settings.update(model='primary-ui',visionModel='primary-ui',reviewProfiles=[])
                     if name in ['separate-service','key-race']: settings['reviewProfiles'][0].update(inheritConnection=False,
@@ -241,8 +261,45 @@ def main():
                         continue
                     page.goto('https://mooc1.chaoxing.com/review-'+name)
                     tab = options.evaluate('(u)=>chrome.tabs.query({}).then(ts=>ts.find(t=>t.url===u).id)',page.url)
+                    if name == 'click-before-submit':
+                        # Simulate a page update/user change while submission permission is awaited.
+                        worker.evaluate('''()=>{globalThis.originalSubmitSet=chrome.storage.session.set;const write=originalSubmitSet.bind(chrome.storage.session);
+                            chrome.storage.session.set=async(data)=>{await write(data);if(Object.values(data).some(s=>s?.submission?.phase==='awaiting_confirmation'))await new Promise(r=>setTimeout(r,500));};}''')
+                        page.evaluate('''()=>{const timer=setInterval(()=>{if(document.querySelector('input[value=A]:checked')){clearInterval(timer);setTimeout(()=>document.querySelector('input[value=B]').checked=true,200);}},10);}''')
                     msg('KP_START',tabId=tab)
-                    if name in ['wrong-no-repeat','batch-feedback']:
+                    if name in ['click-reversed-native','click-reversed-custom']:
+                        until(lambda: len(worker.evaluate('calls')) >= 2)
+                        page.wait_for_timeout(600)
+                        if name=='click-reversed-native':
+                            assert page.locator('input[value="0"]').is_checked(), 'Model A must select visible A even when DOM/value order differs'
+                            page.screenshot(path=str(ROOT/'test-results/selection-mapping-edge.png'),full_page=True)
+                        else:assert page.locator('[data-choice=A]').get_attribute('aria-checked')=='true', 'Visible A must map to the actual A control'
+                    elif name == 'click-multiple-exact':
+                        until(lambda:len(worker.evaluate('calls'))>=2)
+                        page.wait_for_timeout(1300)
+                        assert page.locator('.check_answer').all_text_contents()==['C','A'], 'Custom multi-select must select the exact A/C set without B'
+                        assert not msg('KP_STATUS',tabId=tab)['blocked']
+                    elif name=='click-duplicate-labels':
+                        until(lambda:not msg('KP_STATUS',tabId=tab)['running'])
+                        assert not page.locator('input:checked').count() and worker.evaluate('calls.length')==0, 'Ambiguous printed letters must stop before solving or clicking'
+                        assert '选项字母' in msg('KP_STATUS',tabId=tab)['blocked']
+                    elif name == 'click-correct-custom':
+                        until(lambda:page.locator('[data-study-submitted]').count() or not msg('KP_STATUS',tabId=tab)['running'])
+                        assert page.evaluate('submissions')==['B','A'], 'Custom single choice must not reselect the rejected B while correcting to A'
+                    elif name in ['click-no-proof','click-delayed-flip','click-before-submit']:
+                        until(lambda:len(worker.evaluate('calls'))>=2)
+                        page.wait_for_timeout(1800)
+                        assert page.evaluate('submissions')==[], 'Never submit when the real selected state is missing or has changed after filling'
+                        if name=='click-no-proof':assert not any('已填写' in x['text'] for x in msg('KP_STATUS',tabId=tab)['logs']), 'A plugin-only marker is not proof of platform selection'
+                    elif name=='candidate-display':
+                        until(lambda:not msg('KP_STATUS',tabId=tab)['running'])
+                        popup=context.new_page();popup.add_init_script('chrome.tabs.query=async()=>'+json.dumps([{'id':tab,'url':page.url}]))
+                        try:
+                            popup.goto(worker.url.rsplit('/',1)[0]+'/popup.html')
+                            expect(popup.locator('#answer')).to_contain_text('候选')
+                            assert page.locator('input[value=B]').is_checked(), 'Unreviewed candidate A must not overwrite the existing B'
+                        finally:popup.close()
+                    elif name in ['wrong-no-repeat','batch-feedback']:
                         until(lambda: page.evaluate('submissions.length') > 0)
                         page.wait_for_timeout(14000)
                         assert len(page.evaluate('submissions')) == 1, 'Never submit the same platform-rejected answer twice'
@@ -302,6 +359,8 @@ def main():
                             until(lambda: target.locator('input[value=A]').is_checked() or not msg('KP_STATUS',tabId=tab)['running'])
                             assert target.locator('input[value=A]').is_checked(), 'A malformed primary answer should enter review, not end the whole run'
                         until(lambda: target.locator('input[value='+expected+']').is_checked())
+                        if name=='slow-frame':
+                            until(lambda:any(selection['answers']==['A'] and selection['questionId']==msg('KP_STATUS',tabId=tab)['results'][0]['questionId'] for frame in msg('KP_STATUS',tabId=tab)['frames'].values() for selection in frame.get('selections',[])))
                         calls=worker.evaluate('calls'); state=msg('KP_STATUS',tabId=tab)
                         count=2 if name=='high-self-check' else 4 if name in ['disagreement','disagreement-high','helper-failure'] else 3
                         assert len(calls)==count, 'Count every solve, check and assistant request'
@@ -328,6 +387,7 @@ def main():
                             stages=worker.evaluate('calls.map(c=>({phase:c.phase,model:c.model,feedback:!!c.input.review?.feedback}))'))
                     print('FAIL:',json.dumps(results[-1]),flush=True)
                 finally:
+                    if name=='click-before-submit':worker.evaluate('()=>{if(globalThis.originalSubmitSet)chrome.storage.session.set=originalSubmitSet;}')
                     if tab is not None:
                         msg('KP_STOP',tabId=tab)
                     page.close()

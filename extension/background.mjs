@@ -259,7 +259,7 @@ async function recordAnswer(id, generation, question, answer, cached = false, ac
   });
   await broadcast(id, {
     type: 'KP_RESULT',
-    result: { text: question.text.slice(0, 500), ...answer },
+    result: { text: question.text.slice(0, 500), ...answer, questionId },
   });
   return { ...answer, cached, generation };
 }

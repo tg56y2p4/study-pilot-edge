@@ -88,7 +88,32 @@ with sync_playwright() as p:
   settings=msg('KP_GET_SETTINGS');settings.update(reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-mooc-only',model='fixture-mooc-'+name,courseName='数学大观',moocCourseName='' if name in ['list-ambiguous','list-select'] else '大学物理',keepActive=False,readingInterval=1000,autoSubmit=True,autoConfirm=True,requestGap=2000,visualAgent=True)
   msg('KP_SAVE_SETTINGS',settings=settings);worker.evaluate('()=>{planCalls=0;images=0}')
   page=context.new_page();url=HOST+('/home.htm'+('?activation=1' if name=='list-activation' else '?noopener=1' if name=='list-noopener' else '?double=1' if name=='list-double' else '')+'#/home/course' if name.startswith('list-') else '/learn/'+name+('#/learn/exam?id=1' if name=='exam' else '#/learn/content?type=detail&id=1&cid=1'))
-  page.goto(url);page.wait_for_load_state('networkidle');tab=tabid(page);before=set(context.pages);msg('KP_START',tabId=tab);child=None
+  page.goto(url);page.wait_for_load_state('networkidle');tab=tabid(page);before=set(context.pages);child=None
+  if name=='list-handoff':
+   # Hold the child's initial stopped-state write while the real opener transfer runs.
+   # Every state writer must share the child's queue, including the transfer itself.
+   worker.evaluate('''(parentId)=>{
+    const storage=chrome.storage.session,read=storage.get.bind(storage),write=storage.set.bind(storage);
+    const probe=globalThis.handoffProbe={parentId,childId:0,held:false};
+    let release;const started=new Promise(resolve=>release=resolve);
+    const created=tab=>{if(tab.openerTabId===parentId)probe.childId=tab.id;};
+    chrome.tabs.onCreated.addListener(created);
+    storage.get=async(...args)=>{
+     const result=await read(...args),source=result['tab:'+parentId];
+     if(probe.childId&&source?.running&&source.openIntent)
+      await Promise.race([started,new Promise(resolve=>setTimeout(resolve,1500))]);
+     return result;
+    };
+    storage.set=async(value)=>{
+     const child=value['tab:'+probe.childId];
+     if(probe.childId&&child&&!child.running&&!probe.held){
+      probe.held=true;release();await new Promise(resolve=>setTimeout(resolve,600));
+     }
+     return write(value);
+    };
+    probe.restore=()=>{storage.get=read;storage.set=write;chrome.tabs.onCreated.removeListener(created);};
+   }''',tab)
+  msg('KP_START',tabId=tab)
   try:
    if name in ['list-handoff','list-select','list-activation','list-noopener','list-double']:
     if name=='list-select':
@@ -104,6 +129,7 @@ with sync_playwright() as p:
     until(lambda:msg('KP_STATUS',tabId=child_tab)['running'])
     assert not msg('KP_STATUS',tabId=tab)['running'],'The source list must stop when the child is taken over'
     child.locator('#arrived').wait_for(timeout=18000)
+    if name=='list-handoff':assert worker.evaluate('handoffProbe.held'),'The concurrent initial-state write must be exercised'
     assert not any('/learn/wrong-course' in p.url for p in context.pages),'Do not open a different course'
    elif name=='list-ambiguous':
     page.wait_for_timeout(7000);st=msg('KP_STATUS',tabId=tab)
@@ -173,6 +199,7 @@ with sync_playwright() as p:
    results.append({'case':name,'passed':True});print('PASS:',name,flush=True)
   except Exception as error:
    st=msg('KP_STATUS',tabId=tab);results.append({'case':name,'passed':False,'error':str(error).splitlines()[0],'blocked':st.get('blocked'),'calls':st['calls'],'context':st.get('context'),'progress':st.get('progress'),'frames':st['frames'],'logs':[entry['text'] for entry in st['logs'][:8]]});print('FAIL:',json.dumps(results[-1],ensure_ascii=False),flush=True)
+  if name=='list-handoff':worker.evaluate('()=>handoffProbe.restore()')
   for current in [child,page]:
    if current and not current.is_closed():
     try:msg('KP_STOP',tabId=tabid(current))

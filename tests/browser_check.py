@@ -9,6 +9,7 @@ import json
 import struct
 import wave
 import base64
+import time
 from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
@@ -135,9 +136,24 @@ with sync_playwright() as p:
         return new Response(JSON.stringify({model:body.model,choices:[{message:{content:JSON.stringify(result)},finish_reason:'stop'}],usage:{total_tokens:42}}),{status:200});
       };
     }''')
+    # A background connection must not determine whether the settings UI is ready.
+    readiness_pending=[]
+    readiness_complete=False
+    def readiness_route(request):
+        if readiness_complete:
+            request.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*'},body='')
+        else:readiness_pending.append(request)
+    context.route('https://readiness.example.test/hold',readiness_route)
     options_page=context.new_page()
+    options_page.add_init_script("fetch('https://readiness.example.test/hold',{credentials:'omit'}).catch(()=>{})")
     options_page.goto(f'chrome-extension://{extension_id}/options.html')
-    options_page.wait_for_load_state('networkidle')
+    options_page.locator('#apiKey').wait_for()
+    expect(options_page.locator('#keyStatus')).to_contain_text('请填写',timeout=30000)
+    deadline=time.monotonic()+5
+    while not readiness_pending and time.monotonic()<deadline:options_page.wait_for_timeout(50)
+    assert readiness_pending,'The offline readiness fixture must intercept the pending connection'
+    readiness_complete=True
+    for request in readiness_pending:request.abort()
     try:
         expect(options_page.locator('#model')).to_have_value('')
     except AssertionError:

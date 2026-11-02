@@ -6,6 +6,10 @@
   const answers = new Map();
   const attempts = new Set();
   const retryAfter = new Map();
+  const questionDigests = new Map();
+  const corrections = new Map();
+  const handledRejections = new Set();
+  let lastSubmitted = null;
   const media = new WeakMap();
   const captureIds = new WeakMap();
   let visitedTaskTabs = new WeakSet();
@@ -68,7 +72,56 @@
       return [];
     }
   }
-  const questionKey = (q) => JSON.stringify([q.type, q.text, q.options, q.visualSignature || '']);
+  const questionKey = (q) =>
+    JSON.stringify([
+      q.type,
+      q.text,
+      q.options.map((option, index) => ({
+        label: String.fromCharCode(65 + index),
+        text: String(option.text || '').slice(0, 2000),
+      })),
+      String(q.visualSignature || '').slice(0, 2000),
+    ]);
+  async function questionDigest(q) {
+    const key = questionKey(q);
+    if (!questionDigests.has(key)) {
+      if (questionDigests.size > 500) questionDigests.clear();
+      questionDigests.set(
+        key,
+        crypto.subtle
+          .digest('SHA-256', new TextEncoder().encode(key))
+          .then((hash) =>
+            [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+          )
+      );
+    }
+    return questionDigests.get(key);
+  }
+  function selectedAnswers(q) {
+    return q.optionNodes.length
+      ? q.optionNodes.flatMap((node, i) =>
+          selectedOption(node) ? [String.fromCharCode(65 + i)] : []
+        )
+      : q.fields.map((field) => clean(fieldValue(field)));
+  }
+  function answerSignature(values, type) {
+    const normalized = values.map((value) =>
+      String(value).normalize('NFKC').replace(/\s+/g, ' ').trim()
+    );
+    return JSON.stringify(
+      ['single', 'multiple', 'boolean'].includes(type) ? normalized.sort() : normalized
+    );
+  }
+  function answerReliable(answer) {
+    return !!(
+      answer?.answers?.length &&
+      answer.confidence >= current.settings.minConfidence &&
+      !answer.validationIssue &&
+      !answer.uncertain &&
+      !answer.reviewIssue &&
+      !answer.platformRejected
+    );
+  }
   const selectedOption = (node) =>
     'checked' in node
       ? node.checked
@@ -333,6 +386,7 @@
           const t = clean(el.innerText || el.textContent);
           if (
             /^[A-Z]\s*[.、．:：)）]\s*\S/.test(t) ||
+            isWrongFeedbackText(t) ||
             /^(提交|提交答案|提交作业|确定提交|继续|继续学习|继续播放|关闭)$/.test(t)
           )
             el.remove();
@@ -418,15 +472,9 @@
       };
     });
   }
-  function applyAnswer(q, answer) {
-    if (
-      !q.root.isConnected ||
-      !q.supported ||
-      answer.confidence < current.settings.minConfidence ||
-      !answer.answers.length
-    )
-      return false;
-    if (q.answered) return true;
+  function applyAnswer(q, answer, replaceRejected = false) {
+    if (!q.root.isConnected || !q.supported || !answerReliable(answer)) return false;
+    if (q.answered && !replaceRejected) return true;
     if (q.optionNodes.length) {
       const indexes = answer.answers.map((a) => a.charCodeAt(0) - 65);
       if (
@@ -477,8 +525,7 @@
     return q.fields.every((el, i) => fieldValue(el) === answer.answers[i]);
   }
   function matchesAnswer(q, answer) {
-    if (!answer || answer.confidence < current.settings.minConfidence || !answer.answers.length)
-      return false;
+    if (!answerReliable(answer)) return false;
     if (q.optionNodes.length) {
       const selected = q.optionNodes.flatMap((el, i) =>
         selectedOption(el) ? [String.fromCharCode(65 + i)] : []
@@ -632,6 +679,7 @@
     if (titles.includes(previous)) hudCourseSelect.value = previous;
   }
   function courseStatus(videoReport) {
+    if (current.reviewTask) return `${current.reviewTask.label} · ${current.reviewTask.model}`;
     const reports = [
       videoReport,
       ...Object.values(current.frames || {}).filter((f) => Date.now() - f.time < 9000),
@@ -654,7 +702,7 @@
   function displayResult(result) {
     lastResult = result;
     if (hudAnswer)
-      hudAnswer.textContent = `${result.text}\n\n答案：${result.answers.join('、') || '待确认'}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n\n${result.explanation}`;
+      hudAnswer.textContent = `${result.text}\n\n答案：${result.answers.join('、') || '待确认'}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n${result.reviewIssue || result.review?.reason || ''}\n${(result.review?.stages || []).map((stage) => `${stage.model} · ${stage.label || stage.phase}：${stage.error || (stage.answers || []).join('、') + '（' + Math.round((stage.confidence || 0) * 100) + '%）'}`).join('\n')}\n\n${result.explanation}`;
   }
   async function blockIfNeeded() {
     const captcha = all(
@@ -687,6 +735,7 @@
   }
   function dismissVideoQuizOverlay() {
     if (!current?.running || adapter) return false;
+    if (wrongFeedbackSignals().nodes.length) return false;
     const overlays = all(
       '.ans-videoquiz, .ans-videoquiz-wrap, #videoquiz, .tkTopic, .videoquiz, .vjs-quiz, [data-video-quiz]'
     ).filter(visible);
@@ -862,6 +911,7 @@
       !topFrame ||
       !current.running ||
       !current.settings.autoNext ||
+      current.reviewTask ||
       Date.now() - Math.max(current.pageStarted || 0, current.started || 0) < 6000
     )
       return;
@@ -1090,6 +1140,118 @@
       generation: current.generation,
       reason: `页面超过 ${Math.round(timeout / 1000)} 秒无进展`,
     });
+  }
+  function isWrongFeedbackText(value) {
+    const text = clean(value);
+    return (
+      text.length < 140 &&
+      /^(?:(?:回答|答案|作答|答题)(?:错误|不正确|有误)|答错了|本题回答错误)(?:$|[，,。.!！\s:：])/.test(
+        text
+      )
+    );
+  }
+  const feedbackNodes = new Set();
+  const feedbackVersions = new WeakMap();
+  let feedbackNodeId = 0;
+  const feedbackObserver = new MutationObserver((records) => {
+    for (const node of feedbackNodes) {
+      if (!node.isConnected) {
+        feedbackNodes.delete(node);
+        continue;
+      }
+      const state = feedbackVersions.get(node);
+      const nowVisible = visible(node);
+      if (
+        records.some(
+          (record) =>
+            node === record.target ||
+            node.contains(record.target) ||
+            (record.type === 'attributes' &&
+              record.target.contains?.(node) &&
+              nowVisible !== state.visible)
+        )
+      )
+        state.version++;
+      state.visible = nowVisible;
+    }
+  });
+  feedbackObserver.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'hidden', 'data-study-incorrect'],
+  });
+  function wrongFeedbackSignals() {
+    const nodes = all(
+      '[data-study-incorrect],.ans-videoquiz-error,.tkTopic_error,[role="alert"],span,p,div'
+    )
+      .filter(
+        (node) =>
+          visible(node) &&
+          !node.closest(
+            '#keban-study-assistant,.Zy_TItle,.question-title,.ans-videoquiz-title,label,[data-option]'
+          ) &&
+          (isWrongFeedbackText(node.innerText) ||
+            (node.hasAttribute('data-study-incorrect') &&
+              node.getAttribute('data-study-incorrect') !== 'false'))
+      )
+      .filter(
+        (node, _, allNodes) => !allNodes.some((child) => child !== node && node.contains(child))
+      );
+    for (const node of nodes) {
+      if (!feedbackVersions.has(node))
+        feedbackVersions.set(node, { id: ++feedbackNodeId, version: 0, visible: true });
+      feedbackNodes.add(node);
+    }
+    return {
+      nodes,
+      signature: nodes
+        .map((node) => {
+          const version = feedbackVersions.get(node);
+          return `${version.id}:${version.version}:${clean(node.innerText)}`;
+        })
+        .join('|'),
+    };
+  }
+  async function handleWrongAnswer(questions) {
+    if (
+      !current.running ||
+      !current.submission ||
+      !questions.length ||
+      handledRejections.has(current.submission.nonce)
+    )
+      return false;
+    const signals = wrongFeedbackSignals();
+    if (
+      !signals.nodes.length ||
+      (lastSubmitted?.nonce === current.submission.nonce &&
+        lastSubmitted.errorBaseline === signals.signature)
+    )
+      return false;
+    const affected = questions.filter(
+      (q) => questions.length === 1 || signals.nodes.some((node) => q.root.contains(node))
+    );
+    const response = await send('KP_ANSWER_REJECTED', {
+      generation: current.generation,
+      nonce: current.submission.nonce,
+      questionIds: await Promise.all(affected.map(questionDigest)),
+    });
+    if (!response.accepted) return false;
+    handledRejections.add(current.submission.nonce);
+    if (handledRejections.size > 100) handledRejections.clear();
+    for (const q of questions) {
+      const id = await questionDigest(q);
+      const previous = response.previous.find((proof) => proof.questionId === id);
+      if (!previous) continue;
+      const key = questionKey(q);
+      corrections.set(key, previous.answers);
+      answers.delete(key);
+      attempts.delete(key);
+      retryAfter.delete(key);
+    }
+    current = await send('KP_STATE');
+    return true;
   }
   function isSubmissionConfirmed() {
     if (adapter?.isComplete()) return true;
@@ -1363,6 +1525,8 @@
         current.settings.visionModel,
         current.settings.useVision,
         current.settings.jsonMode,
+        current.settings.reviewEnabled,
+        current.settings.reviewProfiles,
       ]);
       if (context !== answerContext) {
         answers.clear();
@@ -1375,6 +1539,8 @@
         attempts.clear();
         retryAfter.clear();
         submitted.clear();
+        lastSubmitted = null;
+        corrections.clear();
         advanced = false;
         navigationAttempts = 0;
         navigationAt = 0;
@@ -1459,6 +1625,8 @@
           waiting: questions.length ? '章节练习正在处理。' : videoReport.waiting,
         },
       });
+      await handleWrongAnswer(questions);
+      if (current.generation !== runGeneration) return;
       if (hudStatus && !current.blocked)
         hudStatus.textContent = current.running
           ? courseStatus(videoReport)
@@ -1468,10 +1636,22 @@
       for (let q of questions) {
         if (!current.running && !manual && !fillOnce) break;
         const key = questionKey(q);
+        const questionId = await questionDigest(q);
+        const feedback = current.answerFeedback?.find((entry) => entry.questionId === questionId);
+        const previousAnswer = corrections.get(key) || feedback?.previous;
+        const correctionPending =
+          previousAnswer &&
+          answerSignature(selectedAnswers(q), q.type) === answerSignature(previousAnswer, q.type);
+        if (shouldSolve && feedback && (answers.get(key)?.feedbackRevision || 0) < feedback.count) {
+          answers.delete(key);
+          attempts.delete(key);
+          retryAfter.delete(key);
+        }
         const retryKnownLow =
           shouldSolve &&
           (manual || newRun) &&
-          answers.get(key)?.confidence < current.settings.minConfidence;
+          answers.has(key) &&
+          !answerReliable(answers.get(key));
         if (retryKnownLow) {
           answers.delete(key);
           attempts.delete(key);
@@ -1482,6 +1662,7 @@
         if (
           q.answered &&
           !retryKnownLow &&
+          !correctionPending &&
           (!current.running || !current.settings.autoSubmit || answers.has(key))
         ) {
           filled++;
@@ -1503,12 +1684,14 @@
           let answer;
           try {
             answer = await send('KP_SOLVE', {
+              existingFeedback: !current.submission && wrongFeedbackSignals().nodes.length > 0,
               question: {
                 text: q.text,
                 type: q.type,
                 options: q.options,
                 needsImage: q.needsImage,
                 captureId: q.captureId,
+                visualSignature: q.visualSignature,
               },
               generation,
             });
@@ -1535,7 +1718,10 @@
         }
         const answer = answers.get(key);
         if (answer && ((current.running && current.settings.autoFill) || fillOnce)) {
-          if (applyAnswer(q, answer)) {
+          const replaceRejected =
+            previousAnswer &&
+            answerSignature(selectedAnswers(q), q.type) === answerSignature(previousAnswer, q.type);
+          if (applyAnswer(q, answer, !!replaceRejected)) {
             filled++;
             await send('KP_LOG', { text: `已填写：${q.text.slice(0, 45)}` });
           }
@@ -1556,7 +1742,7 @@
               (q) =>
                 !q.answered &&
                 answers.has(questionKey(q)) &&
-                answers.get(questionKey(q)).confidence < current.settings.minConfidence
+                !answerReliable(answers.get(questionKey(q)))
             )
           ? '有题目未达到自动填写阈值，请复核后继续。'
           : '';
@@ -1584,18 +1770,23 @@
       // Stopping from the toolbar can happen during any awaited operation above.
       current = await send('KP_STATE');
       if (current.generation !== runGeneration || (await blockIfNeeded())) return;
-      if (reviewReason && current.running && current.settings.autoSubmit) {
+      if (
+        reviewReason &&
+        current.running &&
+        (current.settings.autoSubmit || questions.some((q) => q.inVideoQuiz))
+      ) {
         const details = questions.flatMap((q, i) => {
           const answer = answers.get(questionKey(q));
-          if (
-            !answer ||
-            (q.answered && matchesAnswer(q, answer)) ||
-            answer.confidence >= current.settings.minConfidence
-          )
+          if (!answer || (q.answered && matchesAnswer(q, answer)) || answerReliable(answer))
             return [];
-          const issue =
-            answer.validationIssue ||
-            `自评 ${Math.round(answer.confidence * 1000) / 10}%，阈值 ${Math.round(current.settings.minConfidence * 100)}%`;
+          const issue = [
+            answer.reviewIssue,
+            answer.validationIssue,
+            answer.uncertain ? '模型标记不确定' : '',
+            `自评 ${Math.round(answer.confidence * 1000) / 10}%，阈值 ${Math.round(current.settings.minConfidence * 100)}%`,
+          ]
+            .filter(Boolean)
+            .join('；');
           return [`本区域第 ${i + 1} 题：${q.text.slice(0, 65)}（${issue}）`];
         });
         await send('KP_BLOCK', {
@@ -1612,7 +1803,9 @@
         questions.length &&
         !remaining
       ) {
-        const signature = questions.map(questionKey).join('|');
+        const signature = JSON.stringify(
+          questions.map((q) => [questionKey(q), selectedAnswers(q)])
+        );
         const allReliable = questions.every((q) => matchesAnswer(q, answers.get(questionKey(q))));
         // Confirm only the dialog produced by this explicit exercise submission.
         const submitSelector =
@@ -1628,6 +1821,27 @@
           questions.map((q) => all(submitSelector, q.root).find(isSubmitBtn)).find(Boolean) ||
           all(submitSelector).find(isSubmitBtn);
         const previous = submitted.get(signature);
+        const errors = wrongFeedbackSignals();
+        if (errors.nodes.length && !lastSubmitted && !current.submission) {
+          const ids = await Promise.all(questions.map(questionDigest));
+          const verified = ids.some((id) =>
+            current.answerFeedback?.some((entry) => entry.questionId === id && entry.count > 0)
+          );
+          if (!verified) {
+            await send('KP_BLOCK', {
+              reason:
+                '页面已有错误提示，但对应的提交记录不明。已阻止原样重交；请核对已有作答或重新打开题目后继续。',
+            });
+            return;
+          }
+        }
+        if (previous && errors.nodes.length) {
+          if (Date.now() - previous.time > 45000)
+            await send('KP_BLOCK', {
+              reason: '平台仍显示上一次错误提示，尚未确认本次结果；已停止重复提交，请核对页面。',
+            });
+          return;
+        }
         if (allReliable && button && (!previous || Date.now() - previous.time >= 12000)) {
           if ((previous?.attempts || 0) >= 3) {
             await send('KP_BLOCK', { reason: '练习提交三次后仍未出现完成状态，请检查平台提示。' });
@@ -1636,9 +1850,26 @@
           const intent = await send('KP_SUBMIT_INTENT', {
             generation: current.generation,
             inVideo: inVideoQuiz,
+            proofs: questions.map((q) => ({
+              question: {
+                text: q.text,
+                type: q.type,
+                options: q.options,
+                needsImage: q.needsImage,
+                captureId: q.captureId,
+                visualSignature: q.visualSignature,
+              },
+              answers: selectedAnswers(q),
+            })),
           });
           if (intent.allowed) {
-            submitted.set(signature, { time: Date.now(), attempts: (previous?.attempts || 0) + 1 });
+            const entry = {
+              time: Date.now(),
+              attempts: (previous?.attempts || 0) + 1,
+              nonce: intent.nonce,
+              errorBaseline: '',
+            };
+            submitted.set(signature, entry);
             submitClickedAt = Date.now();
             await send('KP_LOG', {
               text: inVideoQuiz
@@ -1647,8 +1878,10 @@
                   ? '练习尚未确认完成，正在重试提交。'
                   : '已点击本页练习的提交按钮。',
             });
+            entry.errorBaseline = wrongFeedbackSignals().signature;
+            lastSubmitted = entry;
             button.click();
-          }
+          } else if (intent.reason) await send('KP_BLOCK', { reason: intent.reason });
         }
       }
       if (current.running && (await confirmSubmission()))

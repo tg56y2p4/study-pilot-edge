@@ -80,7 +80,7 @@ with sync_playwright() as p:
  if args.only:print('TRACE: options ready',flush=True)
  def msg(kind,**extra):
   r=o.evaluate('(m)=>chrome.runtime.sendMessage(m)',{'type':kind,**extra});assert r['ok'],r;return r['data']
- s=msg('KP_GET_SETTINGS');s.update(endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-workflow-only',autoSubmit=True,autoConfirm=True,visualAgent=True,agentInterval=8000,requestGap=2000,readingInterval=1000);msg('KP_SAVE_SETTINGS',settings=s)
+ s=msg('KP_GET_SETTINGS');s.update(reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-workflow-only',autoSubmit=True,autoConfirm=True,visualAgent=True,agentInterval=8000,requestGap=2000,readingInterval=1000);msg('KP_SAVE_SETTINGS',settings=s)
  for name in ([args.only] if args.only else CASES):
   s=msg('KP_GET_SETTINGS');s['model']='fixture-'+name;msg('KP_SAVE_SETTINGS',settings=s)
   page=c.new_page();page.goto(HOST+'/'+name);page.wait_for_load_state('networkidle')

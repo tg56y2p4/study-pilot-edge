@@ -1,4 +1,5 @@
 import { DEFAULTS, normalizeSettings, normalizeEndpoint, endpointPermission } from './core.mjs';
+import { createReviewEditor } from './review-options.mjs';
 const $ = (id) => document.getElementById(id);
 const regions = {
   qianwen: 'https://maas.qianwenaiapi.com/compatible-mode/v1',
@@ -15,6 +16,7 @@ let hasKey = false,
   revision = 0,
   busy = false,
   catalogInFlight = false;
+let reviewEditor;
 async function send(type, extra = {}) {
   const r = await chrome.runtime.sendMessage({ type, ...extra });
   if (!r?.ok) throw new Error(r?.error || '连接失败。');
@@ -52,6 +54,15 @@ function summary() {
   $('summaryModel').textContent = $('model').value || '尚未选择';
   $('summaryVision').textContent = $('visionModel').value || '尚未选择';
   $('summaryCatalog').textContent = catalogSource ? catalog.length + ' 个模型' : '等待拉取';
+  const reviewCount = reviewEditor?.collect().length || 0;
+  $('summaryReview').textContent = $('reviewEnabled').checked
+    ? `主模型自检 + ${reviewCount} 个辅助模型`
+    : '单模型模式';
+  $('reviewSetupMessage').textContent = !$('reviewEnabled').checked
+    ? '已关闭自动自检和辅助复核；平台判错后仍会阻止原样重复提交。'
+    : reviewCount
+      ? `已配置 ${reviewCount} 个辅助模型；仅在需要复核时调用。`
+      : '尚未配置辅助模型；每题先做主模型自检，需要独立复核时请添加辅助模型。';
   const selected = catalog.find((m) => m.id === $('visionModel').value);
   $('visionHint').textContent =
     selected?.vision === true
@@ -90,6 +101,7 @@ function renderModels() {
     if (models.some((m) => m.id === $(input).value)) select.value = $(input).value;
   }
   summary();
+  reviewEditor?.refreshSharedCatalog();
 }
 function setBadge(text, state = '') {
   $('connectionBadge').textContent = text;
@@ -105,17 +117,19 @@ function invalidate() {
   renderModels();
   keyStatus();
   setBadge('配置有改动', 'dirty');
+  reviewEditor?.refreshSharedCatalog(true);
 }
-function load(s) {
+function load(s, preserveReview = false) {
   for (const key of Object.keys(DEFAULTS)) {
     const el = $(key);
-    if (!el || key === 'apiKey') continue;
+    if (!el || key === 'apiKey' || key === 'reviewProfiles') continue;
     if (bools.includes(key)) el.checked = s[key];
     else el.value = s[key];
   }
   $('region').value =
     Object.entries(regions).find(([, value]) => value === s.endpoint)?.[0] || 'custom';
   $('sameModel').checked = s.model === s.visionModel;
+  if (!preserveReview) reviewEditor?.load(s.reviewProfiles || []);
   renderModels();
   keyStatus();
   const ready = Boolean(hasKey && s.endpoint && s.model);
@@ -124,6 +138,10 @@ function load(s) {
 function collect() {
   const values = {};
   for (const key of Object.keys(DEFAULTS)) {
+    if (key === 'reviewProfiles') {
+      values[key] = reviewEditor.collect();
+      continue;
+    }
     const el = $(key);
     values[key] = bools.includes(key) ? el.checked : el.value;
   }
@@ -136,12 +154,16 @@ function collect() {
   return normalizeSettings(values);
 }
 async function access(endpoint) {
-  const granted = await chrome.permissions.request({ origins: [endpointPermission(endpoint)] });
+  const endpoints = Array.isArray(endpoint) ? endpoint : [endpoint];
+  const granted = await chrome.permissions.request({
+    origins: [...new Set(endpoints.map(endpointPermission))],
+  });
   if (!granted) throw new Error('未获得此服务的访问权限。请重新点击，并在浏览器提示中允许访问。');
 }
 function setBusy(value) {
   busy = value;
   for (const id of ['fetchModels', 'test', 'testVision']) $(id).disabled = value;
+  reviewEditor?.setBusy();
 }
 async function save(mode = 'all') {
   const s = collect();
@@ -151,11 +173,18 @@ async function save(mode = 'all') {
     throw new Error('请先选择文字模型，或手动填写模型ID。');
   if ((mode === 'vision' || (mode === 'all' && (s.useVision || s.visualAgent))) && !s.visionModel)
     throw new Error('请选择图片模型，或关闭图片识题与视觉操作。');
-  const permission = access(s.endpoint);
+  if (s.reviewEnabled) reviewEditor.validate();
+  const permission = access([
+    s.endpoint,
+    ...s.reviewProfiles
+      .filter((profile) => !profile.inheritConnection && profile.endpoint)
+      .map((profile) => profile.endpoint),
+  ]);
   await permission;
   const result = await send('KP_SAVE_SETTINGS', { settings: s });
   hasKey = result.hasKey;
   savedEndpoint = s.endpoint;
+  reviewEditor.markSaved(result.reviewKeys || []);
   $('endpoint').value = s.endpoint;
   $('apiKey').value = '';
   $('apiKey').type = 'password';
@@ -248,6 +277,10 @@ $('sameModel').onchange = () => {
     renderModels();
   }
 };
+$('reviewEnabled').onchange = () => {
+  summary();
+  setBadge('配置有改动', 'dirty');
+};
 $('showKey').onclick = () => {
   const showing = $('apiKey').type === 'password';
   $('apiKey').type = showing ? 'text' : 'password';
@@ -294,9 +327,10 @@ for (const [id, type, mode] of [
 $('clearKey').onclick = async () => {
   try {
     const s = await send('KP_GET_SETTINGS');
-    await send('KP_SAVE_SETTINGS', { settings: s, clearKey: true });
+    const cleared = await send('KP_SAVE_SETTINGS', { settings: s, clearKey: true });
     hasKey = false;
     $('apiKey').value = '';
+    reviewEditor.markSaved(cleared.reviewKeys || []);
     invalidate();
     show('Key已从本机扩展存储与会话中删除。');
   } catch (error) {
@@ -304,16 +338,44 @@ $('clearKey').onclick = async () => {
   }
 };
 $('reset').onclick = () => {
-  load({
-    ...DEFAULTS,
-    endpoint: $('endpoint').value.trim(),
-    model: $('model').value.trim(),
-    visionModel: $('visionModel').value.trim(),
-    rememberKey: $('rememberKey').checked,
-    jsonMode: $('jsonMode').checked,
-  });
+  load(
+    {
+      ...DEFAULTS,
+      endpoint: $('endpoint').value.trim(),
+      model: $('model').value.trim(),
+      visionModel: $('visionModel').value.trim(),
+      rememberKey: $('rememberKey').checked,
+      jsonMode: $('jsonMode').checked,
+    },
+    true
+  );
   show('行为设置已恢复默认，点击保存后生效。');
 };
+reviewEditor = createReviewEditor({
+  root: $('reviewProfiles'),
+  addButton: $('addReviewer'),
+  send,
+  access,
+  primary: () => ({
+    endpoint: $('endpoint').value,
+    apiKey: $('apiKey').value.trim(),
+    reusableKey: reusableKey(),
+    catalog,
+    setCatalog(result) {
+      catalog = result.models;
+      catalogSource = result.source;
+      $('catalogStatus').textContent = `${catalog.length} 个模型 · 来源 ${result.source}`;
+      renderModels();
+    },
+  }),
+  busy: () => busy,
+  setBusy,
+  save,
+  changed() {
+    summary();
+    setBadge('配置有改动', 'dirty');
+  },
+});
 try {
   const s = await send('KP_GET_SETTINGS');
   hasKey = s.hasKey;

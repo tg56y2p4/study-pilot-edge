@@ -19,20 +19,27 @@ async function refresh() {
   $('status').classList.toggle('running', s.running);
   $('status').classList.toggle('blocked', !s.running && !!s.blocked);
   $('status').classList.toggle('completed', !s.running && !s.blocked && !!s.completed);
-  $('statusTitle').textContent = s.running
-    ? '正在托管'
-    : s.completed
-      ? '课程任务已完成'
-      : s.blocked
-        ? '需要处理'
-        : '准备就绪';
+  const reviewing =
+    s.reviewTask?.generation === s.generation && (s.running || s.manualUntil > Date.now());
+  $('statusTitle').textContent = reviewing
+    ? s.reviewTask.label
+    : s.running
+      ? '正在托管'
+      : s.completed
+        ? '课程任务已完成'
+        : s.blocked
+          ? '需要处理'
+          : '准备就绪';
   $('statusDetail').textContent =
     s.blocked ||
     (!s.hasKey || !s.settings.endpoint || !s.settings.model
       ? '请先在设置中连接AI服务并选择模型。'
-      : s.running
-        ? frames.find((f) => f.waiting)?.waiting || '保持课程页面打开，视频自然播放结束后切换章节。'
-        : '接入已保存，可以开始本轮托管。');
+      : reviewing
+        ? `${s.reviewTask.label} · ${s.reviewTask.model}`
+        : s.running
+          ? frames.find((f) => f.waiting)?.waiting ||
+            '保持课程页面打开，视频自然播放结束后切换章节。'
+          : '接入已保存，可以开始本轮托管。');
   $('videos').textContent =
     `${frames.reduce((n, f) => n + f.ended, 0)} / ${frames.reduce((n, f) => n + f.videos, 0)}`;
   $('calls').textContent = `${s.calls} / ${s.settings.maxCalls}`;
@@ -43,14 +50,26 @@ async function refresh() {
   $('result').hidden = !latest;
   $('noResult').hidden = !!latest;
   $('confidence').textContent = latest
-    ? latest.validationIssue
-      ? '格式待复核'
-      : `模型自评 ${Math.round(latest.confidence * 100)}%`
+    ? latest.platformRejected
+      ? '平台已判错'
+      : latest.reviewIssue
+        ? '复核待处理'
+        : latest.validationIssue
+          ? '格式待复核'
+          : `${latest.review?.status && latest.review.status !== 'single' ? '复核自评' : '模型自评'} ${Math.round(latest.confidence * 100)}%`
     : '';
   if (latest) {
     $('question').textContent = latest.text;
     $('answer').textContent = latest.answers.join('、') || '需要复核';
-    $('explanation').textContent = [latest.validationIssue, latest.explanation]
+    $('explanation').textContent = [
+      latest.validationIssue,
+      latest.reviewIssue || latest.review?.reason,
+      ...(latest.review?.stages || []).map(
+        (stage) =>
+          `${stage.label || stage.phase} · ${stage.model}：${stage.error || (stage.answers || []).join('、') + '（自评 ' + Math.round((stage.confidence || 0) * 100) + '%）'}`
+      ),
+      latest.explanation,
+    ]
       .filter(Boolean)
       .join('\n');
   }
@@ -110,7 +129,7 @@ try {
     $('statusTitle').textContent = '请打开学习通或MOOC';
     $('statusDetail').textContent =
       '进入学习通课程，或中国大学MOOC“个人中心 → 我的课程”，再打开课伴。';
-    for (const id of ['start', 'stop', 'scan', 'fill']) $(id).disabled = true;
+    for (const id of ['start', 'stop', 'scan', 'fill', 'retry']) $(id).disabled = true;
   } else {
     await refresh();
     setInterval(() => refresh().catch((e) => message(e.message, true)), 1500);

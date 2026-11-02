@@ -82,6 +82,35 @@
   margin: 0 0 16px;
   line-height: 1.65;
 }
+.review-card {
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-subtle);
+  min-width: 0;
+}
+.review-profile-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.review-profile-heading h3 {
+  font-size: 15px;
+  margin: 0;
+}
+.review-card [data-connection] {
+  padding: 12px;
+  margin-bottom: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.review-card .message:empty {
+  display: none;
+}
 .connection-summary {
   position: sticky;
   top: 24px;

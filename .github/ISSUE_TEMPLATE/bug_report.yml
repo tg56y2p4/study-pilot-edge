@@ -9,7 +9,7 @@ body:
     id: version
     attributes:
       label: 插件与浏览器版本
-      placeholder: 例如 v0.7.2，Edge 版本号
+      placeholder: 例如 v0.8.0，Edge 版本号
     validations:
       required: true
   - type: dropdown

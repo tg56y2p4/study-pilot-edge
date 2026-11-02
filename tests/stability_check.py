@@ -89,7 +89,7 @@ def main():
                 page, popup, tab = None, None, None
                 try:
                     settings = msg('KP_GET_SETTINGS')
-                    settings.update(endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1', apiKey='offline-fixture-key', model='stability-' + name,
+                    settings.update(reviewEnabled=False, reviewProfiles=[], endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1', apiKey='offline-fixture-key', model='stability-' + name,
                         useVision=False, visualAgent=False, keepActive=False, autoFill=True, autoSolve=True, autoSubmit=True, autoConfirm=True,
                         autoRefresh=True, stallTimeout=15000, minConfidence=0.9, maxCalls=20)
                     if name.startswith('unsaved') or name.startswith('mooc-') or name in ['stale-finish', 'chaoxing-gap']:

@@ -12,15 +12,40 @@ import {
   planRequest,
   endpointPermission,
 } from './core.mjs';
+import {
+  questionIdentity,
+  answerSignature,
+  usableAnswer,
+  reviewConnections,
+  reviewRequestBody,
+  reviewAnswer,
+  REVIEW_PHASES,
+} from './review.mjs';
 import { resolveApiKey, listModels } from './api.mjs';
 import { mergeTasks, normalizeTask, clearTask, pendingSummary, taskKey } from './mooc-tasks.mjs';
 import { captureCourse, playCourseMedia, activateMoocCourse } from './vision.mjs';
 
 // Content scripts never read these storage areas directly. Nothing uses storage.sync.
-const ready = Promise.all([
-  chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
-  chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
-]);
+function apiOrigin(endpoint) {
+  try {
+    return new URL(endpoint).origin;
+  } catch {
+    return '';
+  }
+}
+const ready = (async () => {
+  await Promise.all([
+    chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+    chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+  ]);
+  const [{ settings: saved }, session] = await Promise.all([
+    chrome.storage.local.get('settings'),
+    chrome.storage.session.get(['apiKey', 'apiKeyOrigin']),
+  ]);
+  // Bind an existing pre-0.8 session Key before any settings read/write can run.
+  if (session.apiKey && !session.apiKeyOrigin)
+    await chrome.storage.session.set({ apiKeyOrigin: apiOrigin(saved?.endpoint) });
+})();
 const queues = new Map();
 const cache = new Map();
 const activeRequests = new Map();
@@ -28,12 +53,24 @@ const catalogRequests = new Map();
 
 async function settings() {
   await ready;
-  const [{ settings: saved }, { apiKey: sessionKey }] = await Promise.all([
-    chrome.storage.local.get('settings'),
-    chrome.storage.session.get('apiKey'),
-  ]);
+  return queue('settings', readSettings);
+}
+async function readSettings() {
+  const [{ settings: saved }, { apiKey: sessionKey, apiKeyOrigin, reviewApiKeys = {} }] =
+    await Promise.all([
+      chrome.storage.local.get('settings'),
+      chrome.storage.session.get(['apiKey', 'apiKeyOrigin', 'reviewApiKeys']),
+    ]);
   const s = normalizeSettings(saved || DEFAULTS);
-  if (!s.rememberKey) s.apiKey = sessionKey || '';
+  if (!s.rememberKey)
+    s.apiKey =
+      apiOrigin(s.endpoint) && apiKeyOrigin === apiOrigin(s.endpoint) ? sessionKey || '' : '';
+  for (const profile of s.reviewProfiles)
+    if (!profile.inheritConnection && !profile.rememberKey)
+      profile.apiKey =
+        reviewApiKeys[profile.id]?.origin === apiOrigin(profile.endpoint)
+          ? reviewApiKeys[profile.id].key || ''
+          : '';
   return s;
 }
 const stateKey = (id) => `tab:${id}`;
@@ -173,18 +210,49 @@ async function callApi(s, question, test, controller, images = []) {
     visual: images.length > 0,
   };
 }
+async function testVisionConnection(s) {
+  const canvas = new OffscreenCanvas(240, 100);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, 240, 100);
+  ctx.fillStyle = '#111';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.fillText('2 + 2 = ?', 10, 66);
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const answer = await callApi(
+    s,
+    { text: '请识别图片中的算式并求解。', type: 'text', options: [] },
+    false,
+    new AbortController(),
+    [`data:image/png;base64,${btoa(binary)}`]
+  );
+  if (!answer.answers.some((value) => /4/.test(value)))
+    throw new Error('模型未通过图片算式检查，请检查视觉模型权限。');
+  return { ok: true, model: s.visionModel, answer: answer.answers.join('、') };
+}
+
 async function imageDigest(image) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(image));
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function recordAnswer(id, generation, question, answer, cached = false) {
+async function recordAnswer(id, generation, question, answer, cached = false, accounted = false) {
+  const questionId = await imageDigest(questionIdentity(question));
   await queue(id, async () => {
     const st = await state(id);
     if (st.generation !== generation || st.blocked) throw new Error('解析已停止。');
-    if (!cached) st.tokens += answer.tokens;
+    if (!cached && !accounted) st.tokens += answer.tokens;
     st.lastFailure = null;
-    st.results.unshift({ text: question.text.slice(0, 500), ...answer, cached, time: Date.now() });
+    st.results.unshift({
+      text: question.text.slice(0, 500),
+      ...answer,
+      questionId,
+      cached,
+      time: Date.now(),
+    });
     st.results = st.results.slice(0, 20);
     log(st, `${cached ? '已读取缓存' : '已解析'}：${question.text.slice(0, 45)}`);
     await saveState(id, st);
@@ -196,6 +264,48 @@ async function recordAnswer(id, generation, question, answer, cached = false) {
   return { ...answer, cached, generation };
 }
 
+function feedbackScope(st) {
+  return JSON.stringify(st.context || null);
+}
+function feedbackFor(st, questionId) {
+  const scope = feedbackScope(st);
+  const item = (st.answerFeedback || []).find(
+    (entry) => entry.scope === scope && entry.questionId === questionId
+  );
+  return item ? { needsReview: true, rejectedAnswers: item.rejected, revision: item.count } : {};
+}
+async function submissionProofs(rows) {
+  if (!Array.isArray(rows) || !rows.length || rows.length > 80)
+    throw new Error('未建立本次作答记录，请刷新课程页后继续。');
+  return Promise.all(
+    rows.map(async (row) => {
+      const question = validateQuestion(row.question);
+      if (
+        !Array.isArray(row.answers) ||
+        !row.answers.length ||
+        row.answers.length > 26 ||
+        row.answers.some(
+          (answer) => typeof answer !== 'string' || !answer.trim() || answer.length > 5000
+        )
+      )
+        throw new Error('本次作答记录格式不正确。');
+      return {
+        questionId: await imageDigest(questionIdentity(question)),
+        type: question.type,
+        answers: row.answers.map((answer) => answer.trim()),
+      };
+    })
+  );
+}
+async function submissionSignature(proofs) {
+  return imageDigest(
+    JSON.stringify(
+      proofs
+        .map((proof) => [proof.questionId, answerSignature(proof.answers, proof.type)])
+        .sort((a, b) => a[0].localeCompare(b[0]))
+    )
+  );
+}
 async function solve(message, sender) {
   const id = sender.tab.id;
   const snapshot = await state(id);
@@ -208,68 +318,130 @@ async function solve(message, sender) {
       throw new Error('解析已停止。');
     if (current.blocked) throw new Error(current.blocked);
     const question = validateQuestion(message.question);
+    const questionId = await imageDigest(questionIdentity(question));
+    const knownFeedback = feedbackFor(current, questionId);
+    const feedback =
+      message.existingFeedback === true && !knownFeedback.needsReview
+        ? { needsReview: true, unverified: true, rejectedAnswers: [] }
+        : knownFeedback;
     let images = [];
     if (question.needsImage) {
       if (!s.useVision) throw new Error('当前关闭了图片识别，请在设置中启用。');
       images = [await captureCourse(id, question.captureId)];
     }
+    const { primary, assistants } = reviewConnections(s, images.length > 0);
     const fingerprint = JSON.stringify([
       s.endpoint,
-      images.length ? s.visionModel : s.model,
-      { text: question.text, type: question.type, options: question.options },
+      primary.model,
+      s.jsonMode,
+      s.reviewEnabled,
+      assistants.map((config) => [config.endpoint, config.model, config.jsonMode]),
+      questionId,
+      feedback,
       images.length ? await imageDigest(images[0]) : '',
     ]);
-    const cachedAnswer = cache.get(fingerprint);
-    if (cachedAnswer && cachedAnswer.confidence >= s.minConfidence && !cachedAnswer.validationIssue)
-      return recordAnswer(id, generation, question, cachedAnswer, true);
-    if (current.calls >= s.maxCalls) {
-      await queue(id, async () => {
-        const st = await state(id);
-        st.running = false;
-        st.manualUntil = 0;
-        st.generation++;
-        st.blocked = '已达到本轮 API 请求上限，点击开始可开启新一轮。';
-        log(st, '已达到本轮 API 请求上限。', 'warn');
-        await saveState(id, st);
-      });
-      await broadcast(id, { type: 'KP_WAKE' });
-      throw new Error('已达到本轮 API 请求上限，点击开始可开启新一轮。');
-    }
-    const gap = Math.max(0, s.requestGap - (Date.now() - (current.lastCall || 0)));
-    if (gap) await new Promise((resolve) => setTimeout(resolve, gap));
-    current = await state(id);
-    if (
-      current.generation !== generation ||
-      current.blocked ||
-      !((current.running && s.autoSolve) || (current.manualUntil || 0) > Date.now())
-    )
-      throw new Error('解析已停止。');
-    await queue(id, async () => {
-      const st = await state(id);
-      st.calls++;
-      st.lastCall = Date.now();
-      await saveState(id, st);
-    });
+    const cached = cache.get(fingerprint);
+    if (usableAnswer(cached, s.minConfidence, feedback.rejectedAnswers, question.type))
+      return recordAnswer(id, generation, question, cached, true);
     const controller = new AbortController();
     activeRequests.set(id, controller);
+    let delivered = false;
+    const stopped = () => Object.assign(new Error('解析已停止或配置已改变。'), { fatal: true });
+    async function call(config, phase, context) {
+      if (controller.signal.aborted) throw stopped();
+      if (!config.apiKey) throw new Error('辅助服务尚未填写对应Key，请在设置中补全。');
+      await apiPermission(config.endpoint);
+      current = await state(id);
+      const live = await settings();
+      const gap = Math.max(0, live.requestGap - (Date.now() - (current.lastCall || 0)));
+      if (gap) await new Promise((resolve) => setTimeout(resolve, gap));
+      await queue(id, async () => {
+        const st = await state(id);
+        const latest = await settings();
+        if (
+          controller.signal.aborted ||
+          st.generation !== generation ||
+          st.blocked ||
+          !((st.running && latest.autoSolve) || (st.manualUntil || 0) > Date.now())
+        )
+          throw stopped();
+        if (st.calls >= latest.maxCalls) {
+          st.running = false;
+          st.manualUntil = 0;
+          st.generation++;
+          st.reviewTask = null;
+          st.blocked = '已达到本轮 API 请求上限，点击开始可开启新一轮。';
+          log(st, st.blocked, 'warn');
+          await saveState(id, st);
+          throw Object.assign(new Error(st.blocked), { fatal: true });
+        }
+        st.calls++;
+        st.lastCall = Date.now();
+        if (!st.running) st.manualUntil = Date.now() + 120000;
+        st.reviewTask = {
+          generation,
+          frame: sender.frameId,
+          phase,
+          model: config.model,
+          label: REVIEW_PHASES[phase],
+        };
+        await saveState(id, st);
+      });
+      const data = await rawApi(
+        config,
+        reviewRequestBody(config, question, phase, context, images),
+        controller
+      );
+      const tokens = Math.max(0, Number(data?.usage?.total_tokens) || 0);
+      await queue(id, async () => {
+        const st = await state(id);
+        if (st.generation !== generation || controller.signal.aborted) throw stopped();
+        st.tokens += tokens;
+        await saveState(id, st);
+      });
+      try {
+        return { ...parseAnswer(data, question), tokens, visual: images.length > 0 };
+      } catch (error) {
+        if (!s.reviewEnabled) throw error;
+        return {
+          answers: [],
+          confidence: 0,
+          uncertain: true,
+          validationIssue: error.message,
+          explanation: '',
+          tokens,
+          visual: images.length > 0,
+        };
+      }
+    }
     try {
-      const answer = await callApi(s, question, false, controller, images);
+      const answer = {
+        ...(await reviewAnswer({
+          settings: s,
+          question,
+          visual: images.length > 0,
+          feedback,
+          call,
+        })),
+        feedbackRevision: feedback.revision || 0,
+      };
       const after = await state(id);
-      if (after.generation !== generation || after.blocked) throw new Error('解析已停止。');
-      const result = await recordAnswer(id, generation, question, answer);
-      if (answer.confidence >= s.minConfidence && !answer.validationIssue)
-        cache.set(fingerprint, answer);
+      if (after.generation !== generation || after.blocked || controller.signal.aborted)
+        throw stopped();
+      const result = await recordAnswer(id, generation, question, answer, false, true);
+      if (usableAnswer(answer, s.minConfidence, feedback.rejectedAnswers, question.type))
+        cache.set(fingerprint, { ...answer, questionId });
       else cache.delete(fingerprint);
       if (cache.size > 200) cache.delete(cache.keys().next().value);
+      delivered = true;
       return result;
     } catch (error) {
       await queue(id, async () => {
         const st = await state(id);
         if (st.generation === generation) {
-          const key = JSON.stringify([question.type, question.text, question.options]);
-          const attempts = st.lastFailure?.key === key ? st.lastFailure.attempts + 1 : 1;
+          const attempts = st.lastFailure?.key === questionId ? st.lastFailure.attempts + 1 : 1;
           if (error.retryable && st.running && attempts < 3) {
-            st.lastFailure = { key, attempts };
+            st.lastFailure = { key: questionId, attempts };
             log(st, `接口暂时不可用，将进行第 ${attempts + 1} 次尝试。`, 'warn');
           } else {
             error.retryable = false;
@@ -286,6 +458,16 @@ async function solve(message, sender) {
       throw error;
     } finally {
       if (activeRequests.get(id) === controller) activeRequests.delete(id);
+      await queue(id, async () => {
+        const st = await state(id);
+        if (st.reviewTask?.generation === generation && st.reviewTask.frame === sender.frameId) {
+          st.reviewTask =
+            delivered && st.generation === generation
+              ? { ...st.reviewTask, phase: 'awaiting_page', label: REVIEW_PHASES.awaiting_page }
+              : null;
+          await saveState(id, st);
+        }
+      });
     }
   });
 }
@@ -467,21 +649,92 @@ async function route(m, sender) {
   if (trusted(sender)) {
     if (m.type === 'KP_GET_SETTINGS') {
       const s = await settings();
-      return { ...s, apiKey: '', hasKey: !!s.apiKey };
+      return {
+        ...s,
+        apiKey: '',
+        hasKey: !!s.apiKey,
+        reviewProfiles: s.reviewProfiles.map((profile) => ({
+          ...profile,
+          apiKey: '',
+          hasKey: profile.inheritConnection ? !!s.apiKey : !!profile.apiKey,
+        })),
+      };
     }
     if (m.type === 'KP_SAVE_SETTINGS') {
-      const old = await settings();
-      const s = normalizeSettings(m.settings);
-      s.apiKey = m.clearKey ? '' : resolveApiKey(s, old);
-      await chrome.storage.local.set({ settings: { ...s, apiKey: s.rememberKey ? s.apiKey : '' } });
-      await chrome.storage.session.set({ apiKey: s.rememberKey ? '' : s.apiKey });
-      if (m.clearKey) for (const controller of activeRequests.values()) controller.abort();
-      cache.clear();
-      return { hasKey: !!s.apiKey };
+      return queue('settings', async () => {
+        const old = await readSettings();
+        const s = normalizeSettings(m.settings);
+        s.apiKey = m.clearKey ? '' : resolveApiKey(s, old);
+        const clearReviewKeys = new Set(Array.isArray(m.clearReviewKeys) ? m.clearReviewKeys : []);
+        const reviewApiKeys = Object.create(null);
+        for (const profile of s.reviewProfiles) {
+          const previous = old.reviewProfiles.find((item) => item.id === profile.id) || {};
+          profile.apiKey =
+            m.clearKey || clearReviewKeys.has(profile.id) || profile.inheritConnection
+              ? ''
+              : resolveApiKey(profile, previous);
+          if (
+            s.reviewEnabled &&
+            !m.clearKey &&
+            !clearReviewKeys.has(profile.id) &&
+            (!profile.model ||
+              (!profile.inheritConnection && (!profile.endpoint || !profile.apiKey)))
+          )
+            throw new Error('请补全辅助模型、独立服务地址及对应Key，或删除未使用的配置。');
+          if (!profile.inheritConnection && !profile.rememberKey)
+            reviewApiKeys[profile.id] = {
+              origin: apiOrigin(profile.endpoint),
+              key: profile.apiKey,
+            };
+        }
+        await chrome.storage.local.set({
+          settings: {
+            ...s,
+            apiKey: s.rememberKey ? s.apiKey : '',
+            reviewProfiles: s.reviewProfiles.map((profile) => ({
+              ...profile,
+              apiKey: profile.rememberKey ? profile.apiKey : '',
+            })),
+          },
+        });
+        await chrome.storage.session.set({
+          apiKey: s.rememberKey ? '' : s.apiKey,
+          apiKeyOrigin: apiOrigin(s.endpoint),
+          reviewApiKeys,
+        });
+        const connectionState = (value) =>
+          JSON.stringify([
+            value.endpoint,
+            value.model,
+            value.visionModel,
+            value.useVision,
+            value.apiKey,
+            value.jsonMode,
+            value.reviewEnabled,
+            value.reviewProfiles,
+          ]);
+        if (m.clearKey || connectionState(old) !== connectionState(s))
+          for (const controller of activeRequests.values()) controller.abort();
+        cache.clear();
+        return {
+          hasKey: !!s.apiKey,
+          reviewKeys: s.reviewProfiles.map((profile) => ({
+            id: profile.id,
+            hasKey: profile.inheritConnection ? !!s.apiKey : !!profile.apiKey,
+            endpoint: profile.endpoint,
+          })),
+        };
+      });
     }
     if (m.type === 'KP_LIST_MODELS') {
       const s = normalizeSettings(m.connection);
-      s.apiKey = resolveApiKey(s, await settings());
+      const saved = await settings();
+      s.apiKey = resolveApiKey(
+        s,
+        m.profileId
+          ? saved.reviewProfiles.find((profile) => profile.id === m.profileId) || {}
+          : saved
+      );
       await apiPermission(s.endpoint);
       const owner = sender.documentId || (sender.tab ? 'tab:' + sender.tab.id : sender.url);
       catalogRequests.get(owner)?.controller.abort();
@@ -500,30 +753,20 @@ async function route(m, sender) {
     }
     if (m.type === 'KP_TEST_API')
       return callApi(await settings(), null, true, new AbortController());
-    if (m.type === 'KP_TEST_VISION') {
+    if (m.type === 'KP_TEST_REVIEW') {
       const s = await settings();
-      const canvas = new OffscreenCanvas(240, 100);
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, 240, 100);
-      ctx.fillStyle = '#111';
-      ctx.font = 'bold 48px sans-serif';
-      ctx.fillText('2 + 2 = ?', 10, 66);
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = '';
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      const answer = await callApi(
-        s,
-        { text: '请识别图片中的算式并求解。', type: 'text', options: [] },
-        false,
-        new AbortController(),
-        [`data:image/png;base64,${btoa(binary)}`]
+      const profile = s.reviewProfiles.find((item) => item.id === m.profileId);
+      if (!profile) throw new Error('请先保存辅助模型配置。');
+      const { assistants } = reviewConnections(
+        { ...s, reviewProfiles: [profile], model: '', visionModel: '' },
+        !!m.visual
       );
-      if (!answer.answers.some((value) => /4/.test(value)))
-        throw new Error('模型未通过图片算式检查，请检查视觉模型权限。');
-      return { ok: true, model: s.visionModel, answer: answer.answers.join('、') };
+      const connection = assistants[0];
+      if (!connection) throw new Error('请先选择辅助模型。');
+      if (!m.visual) return callApi(connection, null, true, new AbortController());
+      return testVisionConnection(connection);
     }
+    if (m.type === 'KP_TEST_VISION') return testVisionConnection(await settings());
     if (m.type === 'KP_STATUS') {
       const s = await settings();
       return { ...(await state(m.tabId)), settings: publicSettings(s), hasKey: !!s.apiKey };
@@ -558,6 +801,7 @@ async function route(m, sender) {
           st.agentUnchanged = 0;
           st.agentSignature = '';
           st.submission = null;
+          st.reviewTask = null;
           st.frames = {};
           st.refreshCount = 0;
           st.refreshContext = '';
@@ -922,7 +1166,12 @@ async function route(m, sender) {
     if (m.type === 'KP_TASK_DONE' && sender.frameId === 0)
       return queue(id, async () => {
         const st = await state(id);
-        if (!st.running || m.generation !== st.generation || !st.context)
+        if (
+          !st.running ||
+          m.generation !== st.generation ||
+          !st.context ||
+          st.reviewTask?.generation === st.generation
+        )
           return { accepted: false };
         const frames = Object.values(st.frames || {}).filter((f) => Date.now() - f.time < 9000);
         const videos = frames.reduce((n, f) => n + f.videos, 0),
@@ -969,6 +1218,15 @@ async function route(m, sender) {
         pageStarted: st.pageStarted,
         started: st.started,
         submission: st.submission,
+        reviewTask: st.reviewTask?.generation === st.generation ? st.reviewTask : null,
+        answerFeedback: (st.answerFeedback || [])
+          .filter((entry) => entry.scope === feedbackScope(st))
+          .map(({ questionId, rejected, count, previous }) => ({
+            questionId,
+            rejected,
+            count,
+            previous,
+          })),
         context: st.context,
         progress: st.progress,
         reading: st.readingReturn?.active
@@ -1067,6 +1325,90 @@ async function route(m, sender) {
         await chrome.tabs.update(id, { url: reading.url, active: true });
         return { ok: true };
       });
+    if (m.type === 'KP_ANSWER_REJECTED')
+      return queue(id, async () => {
+        const st = await state(id);
+        const submission = st.submission;
+        if (
+          !st.running ||
+          st.generation !== m.generation ||
+          !submission ||
+          submission.nonce !== m.nonce ||
+          submission.frame !== sender.frameId ||
+          submission.generation !== st.generation ||
+          !submission.proofs?.length
+        )
+          return { accepted: false };
+        const scope = feedbackScope(st);
+        const requested = Array.isArray(m.questionIds) ? new Set(m.questionIds) : new Set();
+        const precise = submission.proofs.filter((proof) => requested.has(proof.questionId));
+        const affected = precise.length ? precise : submission.proofs;
+        st.answerFeedback ||= [];
+        for (const proof of affected) {
+          let item = st.answerFeedback.find(
+            (entry) => entry.scope === scope && entry.questionId === proof.questionId
+          );
+          if (!item) {
+            item = { scope, questionId: proof.questionId, rejected: [], count: 0 };
+            st.answerFeedback.push(item);
+          }
+          item.count++;
+          item.previous = proof.answers;
+          for (const result of st.results || [])
+            if (result.questionId === proof.questionId) {
+              result.platformRejected = !!precise.length;
+              result.reviewIssue = precise.length
+                ? '平台已否定这组答案，正在重新复核。'
+                : '本次提交未通过，正在重新核对各题。';
+            }
+          if (
+            precise.length &&
+            !item.rejected.some(
+              (answer) =>
+                answerSignature(answer, proof.type) === answerSignature(proof.answers, proof.type)
+            )
+          )
+            item.rejected.push(proof.answers);
+          item.rejected = item.rejected.slice(-3);
+          for (const [key, cached] of cache)
+            if (cached.questionId === proof.questionId) cache.delete(key);
+        }
+        st.answerFeedback = st.answerFeedback.slice(-80);
+        st.rejectedBatches = [
+          ...(st.rejectedBatches || []),
+          { scope, signature: submission.signature },
+        ].slice(-80);
+        st.submission = null;
+        st.reviewTask = null;
+        const config = await settings();
+        const exhausted = affected.some(
+          (proof) =>
+            st.answerFeedback.find(
+              (item) => item.scope === scope && item.questionId === proof.questionId
+            )?.count >= 3
+        );
+        if (!config.reviewEnabled || exhausted) {
+          st.running = false;
+          st.manualUntil = 0;
+          st.generation++;
+          st.blocked = exhausted
+            ? '平台多次判错，自动纠正已停止；请核对课程语境或平台答案。已拒绝答案不会原样重交。'
+            : '平台提示回答错误；已停止重复提交。请启用自检并配置辅助模型后重新开始。';
+          log(st, st.blocked, 'warn');
+        } else log(st, '平台提示回答错误，已排除本次答案并启动重新作答和辅助复核。', 'warn');
+        await saveState(id, st);
+        const latest = st.results?.find((result) =>
+          affected.some((proof) => proof.questionId === result.questionId)
+        );
+        if (latest) await broadcast(id, { type: 'KP_RESULT', result: latest });
+        return {
+          accepted: true,
+          questionIds: affected.map((proof) => proof.questionId),
+          previous: affected,
+          precise: !!precise.length,
+          running: st.running,
+        };
+      });
     if (m.type === 'KP_SUBMIT_INTENT' || m.type === 'KP_CLAIM_SUBMIT')
       return queue(id, async () => {
         const st = await state(id),
@@ -1074,16 +1416,36 @@ async function route(m, sender) {
         if (!st.running || st.generation !== m.generation) return { allowed: false };
         if (m.type === 'KP_SUBMIT_INTENT') {
           if (!s.autoSubmit && !m.inVideo) return { allowed: false };
+          const proofs = await submissionProofs(m.proofs);
+          const signature = await submissionSignature(proofs);
+          const scope = feedbackScope(st);
+          if (
+            (st.rejectedBatches || []).some(
+              (entry) => entry.scope === scope && entry.signature === signature
+            )
+          )
+            return { allowed: false, reason: '复核结果仍与平台已判错的答案相同，已阻止重复提交。' };
+          if (
+            proofs.some((proof) =>
+              feedbackFor(st, proof.questionId).rejectedAnswers?.some(
+                (answer) =>
+                  answerSignature(answer, proof.type) === answerSignature(proof.answers, proof.type)
+              )
+            )
+          )
+            return { allowed: false, reason: '当前选择包含平台已否定的答案，请复核后继续。' };
           st.submission = {
             nonce: crypto.randomUUID(),
             generation: st.generation,
             time: Date.now(),
             frame: sender.frameId,
             inVideo: !!m.inVideo,
+            proofs,
+            signature,
             phase: 'awaiting_confirmation',
           };
           await saveState(id, st);
-          return { allowed: true };
+          return { allowed: true, nonce: st.submission.nonce };
         }
         if (
           (!s.autoSubmit && !st.submission?.inVideo) ||
@@ -1125,6 +1487,12 @@ async function route(m, sender) {
         if (m.context?.chapter !== st.context?.chapter || m.context?.card !== st.context?.card)
           return { accepted: false };
         st.frames[sender.frameId] = { ...m.report, time: Date.now() };
+        if (
+          st.reviewTask?.phase === 'awaiting_page' &&
+          st.reviewTask.frame === sender.frameId &&
+          st.reviewTask.generation === st.generation
+        )
+          st.reviewTask = null;
         if (m.report.completed && st.context && st.progress) {
           st.progress.doneCards[st.context.card] = true;
           st.submission = null;
@@ -1155,6 +1523,7 @@ async function route(m, sender) {
         // Background throttling must not turn an unsubmitted form into a reloadable blank page.
         if (
           st.submission ||
+          st.reviewTask?.generation === st.generation ||
           Object.values(st.frames || {}).some((frame) => frame.questions > 0 && !frame.completed)
         )
           return { refreshed: false, protected: true };

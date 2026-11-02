@@ -171,6 +171,7 @@ with sync_playwright() as p:
     options_page.locator('#endpoint').fill('https://maas.qianwenaiapi.com/compatible-mode/v1')
     options_page.locator('#model').fill('qwen3.7-plus')
     options_page.locator('#apiKey').fill('fixture-not-a-real-key')
+    options_page.locator('#reviewEnabled').uncheck()
     options_page.locator('#autoSubmit').uncheck()
     options_page.locator('#visualAgent').uncheck()
     options_page.locator('#maxCalls').fill('30')

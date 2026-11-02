@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipInfo, ZipFile
 EXTENSION_FILES = (
     'api.mjs', 'background.mjs', 'content.js', 'core.mjs', 'manifest.json',
     'mooc-adapter.js', 'mooc-tasks.mjs', 'options.css', 'options.html',
-    'options.mjs', 'popup.html', 'popup.mjs', 'ui.css', 'vision.mjs',
+    'options.mjs', 'popup.html', 'popup.mjs', 'ui.css', 'vision.mjs', 'review.mjs', 'review-options.mjs',
 )
 PUBLIC_TOOLS = (
     'check_repo.py', 'check_syntax.py', 'export_source.py', 'package.py',
@@ -17,6 +17,7 @@ PUBLIC_TESTS = (
     'api.test.mjs', 'core.test.mjs', 'mooc_tasks.test.mjs', 'browser_check.py',
     'browser_support.py', 'models_browser_check.py', 'mooc_check.py',
     'mooc_pending_check.py', 'workflow_check.py', 'release_test.py', 'stability_check.py',
+    'review.test.mjs', 'review_check.py',
 )
 ROOT_FILES = (
     '.gitignore', '.gitattributes', '.editorconfig', '.prettierignore',
@@ -87,7 +88,7 @@ def write_zip(destination, payload):
 
 def verified_checks(root):
     output = root / 'test-results'
-    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json', 'stability': 'stability-report.json'}
+    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json', 'stability': 'stability-report.json', 'review': 'review-report.json'}
     # The Chromium suite uses its own report name.
     aggregate = json.loads((output / 'browser-suite-report.json').read_text(encoding='utf-8'))
     if aggregate.get('browser') == 'chromium':

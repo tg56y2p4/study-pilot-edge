@@ -132,7 +132,26 @@
               >
             </fieldset>
             <fieldset class="setup-step">
-              <legend><span class="step-number">3</span> 测试并保存</legend>
+              <legend><span class="step-number">3</span> 自检与辅助复核</legend>
+              <label class="check"
+                ><input id="reviewEnabled" type="checkbox" checked /><span>
+                  <b>每题先由主模型自检</b
+                  ><small
+                    >低于阈值、不确定、结论变化或平台判错时，按顺序调用辅助模型独立复核；有分歧再做一次最终判别。</small
+                  >
+                </span></label
+              >
+              <p class="step-description">
+                可添加最多3个辅助模型，共用上方连接或分别填写服务地址和Key。自检和复核的每次请求都计入本轮调用上限，仍未解决的分歧会保留待复核状态。
+              </p>
+              <div id="reviewProfiles"></div>
+              <button id="addReviewer" type="button">添加辅助模型</button>
+              <p id="reviewSetupMessage" class="message" role="status">
+                尚未配置辅助模型；启用后每题仍会先做主模型自检。
+              </p>
+            </fieldset>
+            <fieldset class="setup-step">
+              <legend><span class="step-number">4</span> 测试并保存</legend>
               <p class="step-description">
                 先检查文字输出，再确认图片识别。测试会调用所选模型，费用由你的 API 账户承担。
               </p>
@@ -154,6 +173,8 @@
               <dd id="summaryModel">尚未选择</dd>
               <dt>图片模型</dt>
               <dd id="summaryVision">尚未选择</dd>
+              <dt>答案复核</dt>
+              <dd id="summaryReview">主模型自检</dd>
               <dt>模型目录</dt>
               <dd id="summaryCatalog">等待拉取</dd>
             </dl>

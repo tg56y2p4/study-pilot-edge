@@ -5,6 +5,8 @@ export const DEFAULTS = Object.freeze({
   apiKey: '',
   rememberKey: false,
   jsonMode: true,
+  reviewEnabled: true,
+  reviewProfiles: Object.freeze([]),
   autoPlay: true,
   muted: true,
   autoNext: true,
@@ -94,9 +96,15 @@ export function normalizeSettings(input = {}) {
   if (s.visionModel && !validModelId(s.visionModel)) throw new Error('请填写正确的视觉模型 ID。');
   s.apiKey = String(s.apiKey || '').trim();
   if (/[\r\n]/.test(s.apiKey) || s.apiKey.length > 512) throw new Error('API Key 格式不正确。');
+  if (!Array.isArray(s.reviewProfiles) || s.reviewProfiles.length > 3)
+    throw new Error('最多配置3个辅助模型。');
+  s.reviewProfiles = s.reviewProfiles.map(normalizeReviewProfile);
+  if (new Set(s.reviewProfiles.map((profile) => profile.id)).size !== s.reviewProfiles.length)
+    throw new Error('辅助模型配置ID重复。');
   for (const key of [
     'rememberKey',
     'jsonMode',
+    'reviewEnabled',
     'autoPlay',
     'muted',
     'autoNext',
@@ -132,8 +140,39 @@ export function normalizeSettings(input = {}) {
 }
 
 export function publicSettings(settings) {
-  const { apiKey, rememberKey, ...safe } = settings;
-  return safe;
+  const { apiKey, rememberKey, reviewProfiles = [], ...safe } = settings;
+  return {
+    ...safe,
+    reviewProfiles: reviewProfiles.map(({ apiKey, rememberKey, ...profile }) => profile),
+  };
+}
+
+export function normalizeReviewProfile(input = {}, index = 0) {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    throw new Error('辅助模型配置格式不正确。');
+  const id = String(input.id || `review-${index + 1}`);
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error('辅助模型配置ID不正确。');
+  const inheritConnection = input.inheritConnection !== false;
+  const endpoint = inheritConnection || !input.endpoint ? '' : normalizeEndpoint(input.endpoint);
+  const model = String(input.model || '').trim();
+  const visionModel = String(input.visionModel || '').trim();
+  if ((model && !validModelId(model)) || (visionModel && !validModelId(visionModel)))
+    throw new Error('辅助模型ID不正确。');
+  const apiKey = inheritConnection ? '' : String(input.apiKey || '').trim();
+  if (/[\r\n]/.test(apiKey) || apiKey.length > 512) throw new Error('辅助模型Key格式不正确。');
+  return {
+    id,
+    name: String(input.name || `辅助模型 ${index + 1}`)
+      .trim()
+      .slice(0, 80),
+    inheritConnection,
+    endpoint,
+    apiKey,
+    rememberKey: !inheritConnection && input.rememberKey === true,
+    jsonMode: input.jsonMode !== false,
+    model,
+    visionModel,
+  };
 }
 
 export function coursePlatform(value) {
@@ -164,6 +203,7 @@ export function validateQuestion(q) {
     text: String(o.text || '').slice(0, 2000),
   }));
   const safe = { text: q.text, type: q.type, options };
+  if (q.visualSignature) safe.visualSignature = String(q.visualSignature).slice(0, 2000);
   if (q.needsImage) {
     if (!/^[a-zA-Z0-9_-]{8,80}$/.test(q.captureId || ''))
       throw new Error('图片题缺少有效的截图标记。');
@@ -352,6 +392,7 @@ export function parseAnswer(data, question) {
     answers,
     confidence,
     validationIssue,
+    uncertain: parsed.uncertain === true || parsed.needs_review === true,
     explanation: String(parsed.explanation || '').slice(0, 6000),
   };
 }

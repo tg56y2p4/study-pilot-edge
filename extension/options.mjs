@@ -62,7 +62,7 @@ function summary() {
     ? '已关闭自动自检和辅助复核；平台判错后仍会阻止原样重复提交。'
     : reviewCount
       ? `已配置 ${reviewCount} 个辅助模型；仅在需要复核时调用。`
-      : '尚未配置辅助模型；每题先做主模型自检，需要独立复核时请添加辅助模型。';
+      : '每题先做主模型自检并自动选答；添加辅助模型可增加独立复核。';
   const selected = catalog.find((m) => m.id === $('visionModel').value);
   $('visionHint').textContent =
     selected?.vision === true
@@ -384,3 +384,16 @@ try {
 } catch (error) {
   show(error.message, true);
 }
+document.addEventListener(
+  'pointermove',
+  (e) => {
+    const target = e.target?.closest?.(
+      'button, fieldset, details, .connection-summary, .review-card, .check'
+    );
+    if (!target) return;
+    const r = target.getBoundingClientRect();
+    target.style.setProperty('--mx', `${e.clientX - r.left}px`);
+    target.style.setProperty('--my', `${e.clientY - r.top}px`);
+  },
+  { passive: true }
+);

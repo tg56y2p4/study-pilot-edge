@@ -17,14 +17,14 @@ PUBLIC_TESTS = (
     'api.test.mjs', 'core.test.mjs', 'mooc_tasks.test.mjs', 'browser_check.py',
     'browser_support.py', 'models_browser_check.py', 'mooc_check.py',
     'mooc_pending_check.py', 'workflow_check.py', 'release_test.py', 'stability_check.py',
-    'review.test.mjs', 'review_check.py',
+    'review.test.mjs', 'review_check.py', 'assessments_check.py', 'answer_adapters_check.py',
 )
 ROOT_FILES = (
     '.gitignore', '.gitattributes', '.editorconfig', '.prettierignore',
     '.prettierrc.json', 'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md',
     'SECURITY.md', 'package.json', 'package-lock.json', 'requirements-dev.txt',
 )
-DOC_FILES = ('CONFIGURATION.md', 'PRIVACY.md', 'DEVELOPMENT.md', 'RELEASING.md', 'TROUBLESHOOTING.md', 'images/settings.png')
+DOC_FILES = ('CONFIGURATION.md', 'PRIVACY.md', 'DEVELOPMENT.md', 'RELEASING.md', 'TROUBLESHOOTING.md', 'ANSWER_ADAPTERS.md', 'images/settings.png')
 GITHUB_FILES = ('workflows/ci.yml', 'dependabot.yml', 'pull_request_template.md', 'ISSUE_TEMPLATE/bug_report.yml', 'ISSUE_TEMPLATE/feature_request.yml', 'ISSUE_TEMPLATE/config.yml')
 
 
@@ -88,7 +88,7 @@ def write_zip(destination, payload):
 
 def verified_checks(root):
     output = root / 'test-results'
-    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json', 'stability': 'stability-report.json', 'review': 'review-report.json'}
+    reports = {'unit': 'unit-report.json', 'edge_or_chromium': 'edge-report.json', 'models': 'models-report.json', 'workflow': 'workflow-report.json', 'mooc': 'mooc-report.json', 'pending': 'mooc-pending-report.json', 'stability': 'stability-report.json', 'review': 'review-report.json', 'assessments': 'assessments-report.json', 'adapters': 'answer-adapters-report.json'}
     # The Chromium suite uses its own report name.
     aggregate = json.loads((output / 'browser-suite-report.json').read_text(encoding='utf-8'))
     if aggregate.get('browser') == 'chromium':

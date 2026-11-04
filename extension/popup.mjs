@@ -26,7 +26,11 @@ async function refresh() {
     : s.running
       ? '正在托管'
       : s.completed
-        ? '课程任务已完成'
+        ? s.assessmentCompleted === 'exam'
+          ? '考试已交卷'
+          : s.assessmentCompleted === 'homework'
+            ? '作业已提交'
+            : '课程任务已完成'
         : s.blocked
           ? '需要处理'
           : '准备就绪';
@@ -39,7 +43,9 @@ async function refresh() {
         : s.running
           ? frames.find((f) => f.waiting)?.waiting ||
             '保持课程页面打开，视频自然播放结束后切换章节。'
-          : '接入已保存，可以开始本轮托管。');
+          : s.completed && s.assessmentCompleted
+            ? '本次作答已提交，可以返回课程。'
+            : '接入已保存，可以开始本轮托管。');
   $('videos').textContent =
     `${frames.reduce((n, f) => n + f.ended, 0)} / ${frames.reduce((n, f) => n + f.videos, 0)}`;
   $('calls').textContent = `${s.calls} / ${s.settings.maxCalls}`;
@@ -52,23 +58,29 @@ async function refresh() {
   $('confidence').textContent = latest
     ? latest.platformRejected
       ? '平台已判错'
-      : latest.reviewIssue
-        ? '复核待处理'
-        : latest.validationIssue
-          ? '格式待复核'
-          : `${latest.review?.status && latest.review.status !== 'single' ? '复核自评' : '模型自评'} ${Math.round(latest.confidence * 100)}%`
+      : latest.review?.status === 'platform_inferred'
+        ? '依据平台反馈改选'
+        : latest.review?.status === 'best_effort'
+          ? '已自动采用候选'
+          : latest.reviewIssue
+            ? '复核待处理'
+            : latest.validationIssue && latest.validationKind !== 'confidence'
+              ? '格式待复核'
+              : `${latest.review?.status && latest.review.status !== 'single' ? '复核自评' : '模型自评'} ${Math.round(latest.confidence * 100)}%`
     : '';
   if (latest) {
     $('question').textContent = latest.text;
+    const adopted = latest.review?.status === 'best_effort';
     const candidate =
-      latest.reviewIssue ||
-      latest.validationIssue ||
-      latest.uncertain ||
-      latest.platformRejected ||
-      latest.confidence < s.settings.minConfidence;
+      !adopted &&
+      (latest.review?.status === 'best_effort' ||
+        latest.reviewIssue ||
+        (latest.validationIssue && latest.validationKind !== 'confidence') ||
+        latest.uncertain ||
+        latest.platformRejected);
     $('answer').textContent = candidate
       ? `候选：${latest.answers.join('、') || '待确认'}（未通过复核）`
-      : latest.answers.join('、') || '需要复核';
+      : (adopted ? '自动采用：' : '') + (latest.answers.join('、') || '需要复核');
     const selection = frames
       .flatMap((frame) => frame.selections || [])
       .filter((item) => item.questionId === latest.questionId);
@@ -109,7 +121,6 @@ for (const [id, type] of [
   ['stop', 'KP_STOP'],
   ['scan', 'KP_SCAN'],
   ['fill', 'KP_FILL'],
-  ['retry', 'KP_RETRY_LOW'],
 ]) {
   $(id).onclick = async () => {
     inFlight = true;
@@ -120,9 +131,8 @@ for (const [id, type] of [
         {
           start: '已开始，运行状态也会显示在课程右下角。',
           stop: '已停止。',
-          scan: '已发送解析请求，请在此处或课程面板查看结果。',
-          fill: '已发送填写请求；只填写达到阈值且未作答的题目。',
-          retry: '正在重试低分或格式异常题目；保留已有答案，不自动提交。',
+          scan: '正在解析并自动作答，复核后会按设置填写和提交。',
+          fill: '已发送填写请求，使用模型完成复核后的有效答案。',
         }[id]
       );
     } catch (e) {
@@ -143,7 +153,7 @@ try {
     $('statusTitle').textContent = '请打开学习通或MOOC';
     $('statusDetail').textContent =
       '进入学习通课程，或中国大学MOOC“个人中心 → 我的课程”，再打开课伴。';
-    for (const id of ['start', 'stop', 'scan', 'fill', 'retry']) $(id).disabled = true;
+    for (const id of ['start', 'stop', 'scan', 'fill']) $(id).disabled = true;
   } else {
     await refresh();
     setInterval(() => refresh().catch((e) => message(e.message, true)), 1500);
@@ -151,3 +161,14 @@ try {
 } catch (e) {
   message(e.message, true);
 }
+document.addEventListener(
+  'pointermove',
+  (e) => {
+    for (const el of document.querySelectorAll('button, .statusbar, .stats > div, .result, .log')) {
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--mx', `${e.clientX - r.left}px`);
+      el.style.setProperty('--my', `${e.clientY - r.top}px`);
+    }
+  },
+  { passive: true }
+);

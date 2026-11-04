@@ -85,7 +85,7 @@ with sync_playwright() as p:
    options.wait_for_timeout(150)
   raise AssertionError('Condition timed out')
  for name in ([args.only] if args.only else CASES):
-  settings=msg('KP_GET_SETTINGS');settings.update(reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-mooc-only',model='fixture-mooc-'+name,courseName='数学大观',moocCourseName='' if name in ['list-ambiguous','list-select'] else '大学物理',keepActive=False,readingInterval=1000,autoSubmit=True,autoConfirm=True,requestGap=2000,visualAgent=True)
+  settings=msg('KP_GET_SETTINGS');settings.update(autoAssessments=False,confidenceGate=True, reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-mooc-only',model='fixture-mooc-'+name,courseName='数学大观',moocCourseName='' if name in ['list-ambiguous','list-select'] else '大学物理',keepActive=False,readingInterval=1000,autoSubmit=True,autoConfirm=True,requestGap=2000,visualAgent=True)
   msg('KP_SAVE_SETTINGS',settings=settings);worker.evaluate('()=>{planCalls=0;images=0}')
   page=context.new_page();url=HOST+('/home.htm'+('?activation=1' if name=='list-activation' else '?noopener=1' if name=='list-noopener' else '?double=1' if name=='list-double' else '')+'#/home/course' if name.startswith('list-') else '/learn/'+name+('#/learn/exam?id=1' if name=='exam' else '#/learn/content?type=detail&id=1&cid=1'))
   page.goto(url);page.wait_for_load_state('networkidle');tab=tabid(page);before=set(context.pages);child=None
@@ -148,11 +148,13 @@ with sync_playwright() as p:
     page.locator('#arrived').wait_for(timeout=25000)
    elif name=='image':
     page.locator('body[data-submitted=yes]').wait_for(timeout=18000);assert worker.evaluate('images')==1
-   elif name in ['existing','login','exam']:
+   elif name=='existing':
+    page.locator('body[data-submitted=yes]').wait_for(timeout=18000)
+    assert page.locator('input[value=B]').is_checked() and not msg('KP_STATUS',tabId=tab)['blocked'], 'Replace the original A and submit the reviewed B'
+   elif name in ['login','exam']:
     until(lambda:not msg('KP_STATUS',tabId=tab)['running'])
     st=msg('KP_STATUS',tabId=tab)
-    if name=='existing':assert page.locator('input[value=A]').is_checked() and '复核' in st['blocked']
-    else:assert st['calls']==0 and st['blocked']
+    assert st['calls']==0 and st['blocked']
    elif name=='locked':
     page.wait_for_timeout(9500);assert page.locator('body').get_attribute('data-bad') is None
     assert 'unit:1' in msg('KP_STATUS',tabId=tab)['progress']['doneCards']

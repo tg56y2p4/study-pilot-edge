@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ['unsaved', 'unsaved-frame', 'confirmation-wait', 'video-confirm', 'video-manual-confirm',
          'chaoxing-gap', 'mooc-gap', 'mooc-lazy-gap', 'mooc-all-done', 'mooc-pending',
-         'retry-low', 'retry-limit', 'retry-start', 'retry-invalid', 'mooc-accordion', 'stale-finish']
+         'low-auto', 'call-limit', 'restart-invalid', 'missing-score-auto', 'mooc-accordion', 'stale-finish']
 BASE = '<!doctype html><meta charset=utf-8><style>body{font:18px Arial;padding:20px}label,button{display:block;padding:10px}iframe{width:800px;height:400px}[role=dialog]{position:fixed;top:100px;left:50px;padding:25px;background:white;z-index:20;border:1px solid blue}</style>'
 QUESTION = '<div class=TiMu><h3 class=Zy_TItle>【单选题】低分题2+2等于多少？</h3><label><input type=radio name=q value=A>A.3</label><label><input type=radio name=q value=B>B.4</label></div>'
 FORM = QUESTION + '''<button id=submit onclick="document.getElementById('dialog').hidden=false">提交答案</button><div id=dialog role=dialog hidden>确认提交？<button id=confirm onclick="document.body.dataset.confirmed='yes';document.getElementById('work').remove();document.getElementById('done').hidden=false">确认提交</button></div>'''
@@ -50,8 +50,9 @@ def main():
                 body = '''<div class=m-learnChapterNormal><div class=j-titleBox onclick=load(1)><div class=j-titleName>第一章</div></div><div id=one></div></div><div class=m-learnChapterNormal><div class=j-titleBox onclick=load(2)><div class=j-titleName>第二章</div></div><div id=two></div></div><script>window.visits=[];function load(n){document.getElementById('one').innerHTML='';document.getElementById('two').innerHTML='';document.getElementById(n===1?'one':'two').innerHTML='<div class=u-learnLesson><span class=lsicon data-cid='+n+' onclick=learn(this,'+n+')>课时'+n+'</span></div>'}function learn(el,n){visits.push(n);el.classList.add('learned')}load(1)</script>'''
         elif name == 'stale-finish':
             body = '<p>未取得目录完成证据</p>'
-        elif name == 'retry-low':
-            body += QUESTION.replace('低分题', '高分题').replace('name=q', 'name=high')
+        elif name in ['low-auto','missing-score-auto','restart-invalid','call-limit']:
+            body = '<div id=work>'+FORM+'</div><p id=done data-study-submitted hidden>提交成功</p>'
+            if name=='low-auto':body=body.replace(QUESTION,QUESTION+QUESTION.replace('低分题','高分题').replace('name=q','name=high'))
         request.fulfill(status=200, content_type='text/html; charset=utf-8', body=BASE + body)
 
     with tempfile.TemporaryDirectory(prefix='study-pilot-stability-') as profile, sync_playwright() as p:
@@ -65,8 +66,8 @@ def main():
             worker.evaluate('''()=>{globalThis.stabilityCase='';globalThis.requests={};globalThis.fetch=async(url,opts)=>{
                 const body=JSON.parse(opts.body),q=JSON.parse(body.messages[1].content),key=q.text.includes('高分题')?'high':'low';
                 requests[key]=(requests[key]||0)+1;
-                const low=stabilityCase.startsWith('retry-')&&key==='low'&&(requests[key]===1||stabilityCase==='retry-limit');
-                return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({answers:['B'],confidence:low?(stabilityCase==='retry-invalid'?'0.99':0.85):0.99,explanation:'offline fixture'})},finish_reason:'stop'}],usage:{total_tokens:1}}));
+                const low=['low-auto','missing-score-auto','restart-invalid','call-limit'].includes(stabilityCase)&&key==='low'&&(requests[key]===1||stabilityCase==='call-limit');
+                return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({answers:[low&&['restart-invalid','call-limit'].includes(stabilityCase)?'Z':'B'],confidence:low?(stabilityCase==='missing-score-auto'?'0.99':0.85):0.99,explanation:'offline fixture'})},finish_reason:'stop'}],usage:{total_tokens:1}}));
             }}''')
             options = context.new_page()
             options.goto(worker.url.rsplit('/', 1)[0] + '/options.html')
@@ -89,7 +90,7 @@ def main():
                 page, popup, tab = None, None, None
                 try:
                     settings = msg('KP_GET_SETTINGS')
-                    settings.update(reviewEnabled=False, reviewProfiles=[], endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1', apiKey='offline-fixture-key', model='stability-' + name,
+                    settings.update(confidenceGate=True, reviewEnabled=False, reviewProfiles=[], endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1', apiKey='offline-fixture-key', model='stability-' + name,
                         useVision=False, visualAgent=False, keepActive=False, autoFill=True, autoSolve=True, autoSubmit=True, autoConfirm=True,
                         autoRefresh=True, stallTimeout=15000, minConfidence=0.9, maxCalls=20)
                     if name.startswith('unsaved') or name.startswith('mooc-') or name in ['stale-finish', 'chaoxing-gap']:
@@ -98,7 +99,7 @@ def main():
                         settings['autoSubmit'] = False
                     if name in ['confirmation-wait', 'video-manual-confirm']:
                         settings['autoConfirm'] = False
-                    if name == 'retry-limit':
+                    if name == 'call-limit':
                         settings['maxCalls'] = 1
                     msg('KP_SAVE_SETTINGS', settings=settings)
                     worker.evaluate('(name)=>{stabilityCase=name;requests={}}', name)
@@ -158,33 +159,20 @@ def main():
                         generation = msg('KP_STATUS', tabId=tab)['generation']
                         options.evaluate('({id,g})=>chrome.scripting.executeScript({target:{tabId:id},func:g=>chrome.runtime.sendMessage({type:"KP_MOOC_FINISH",generation:g,allLearned:false}),args:[g]})', {'id': tab, 'g': generation})
                         assert msg('KP_STATUS', tabId=tab)['running'], 'A resume cursor is not completion proof'
-                    else:
-                        until(lambda: bool(msg('KP_STATUS', tabId=tab).get('blocked')))
-                        if name in ['retry-low', 'retry-invalid']:
-                            expected = '数值自评分' if name == 'retry-invalid' else '85%'
-                            assert expected in msg('KP_STATUS', tabId=tab)['blocked'], 'Report the actual blocking reason'
-                            popup = context.new_page()
-                            popup.add_init_script('chrome.tabs.query=async()=>'+json.dumps([{'id':tab,'url':url}]))
-                            popup.goto(worker.url.rsplit('/',1)[0]+'/popup.html')
-                            popup.locator('#retry').click()
-                            until(lambda: worker.evaluate('requests.low') == 2)
-                            until(lambda: msg('KP_STATUS', tabId=tab)['results'][0]['confidence'] >= 0.9)
-                            if name == 'retry-low':
-                                assert worker.evaluate('requests.high') == 1, 'Keep reliable answers and avoid rebilling them'
-                            assert not page.locator('input[name=q]:checked').count(), 'Manual retry must not submit or fill'
-                            if name == 'retry-low':
-                                assert page.locator('input[name=high][value=B]').is_checked()
-                            msg('KP_FILL', tabId=tab)
-                            until(lambda: page.locator('input[name=q][value=B]').is_checked())
-                        elif name == 'retry-start':
-                            msg('KP_START', tabId=tab)
-                            until(lambda: page.locator('input[name=q][value=B]').is_checked())
-                            assert worker.evaluate('requests.low') == 2
+                    elif name in ['low-auto','missing-score-auto']:
+                        until(lambda: page.get_attribute('body','data-confirmed')=='yes')
+                        assert not msg('KP_STATUS',tabId=tab)['blocked'], 'Self-rating must not prevent selection and submission'
+                        if name=='low-auto':assert worker.evaluate('requests.high')==1, 'Do not rebill completed answers'
+                    elif name in ['restart-invalid','call-limit']:
+                        until(lambda: bool(msg('KP_STATUS',tabId=tab).get('blocked')))
+                        if name=='restart-invalid':
+                            msg('KP_START',tabId=tab)
+                            until(lambda:page.get_attribute('body','data-confirmed')=='yes')
+                            assert worker.evaluate('requests.low')==2
                         else:
-                            response = options.evaluate('(id)=>chrome.scripting.executeScript({target:{tabId:id},func:()=>chrome.runtime.sendMessage({type:"KP_RETRY_LOW"})})', tab)
-                            assert response[0]['result']['ok'], response
-                            until(lambda: '上限' in (msg('KP_STATUS', tabId=tab).get('blocked') or ''))
-                            assert worker.evaluate('requests.low') == 1
+                            msg('KP_SCAN',tabId=tab)
+                            until(lambda:'上限' in (msg('KP_STATUS',tabId=tab).get('blocked') or ''))
+                            assert worker.evaluate('requests.low')==1
                     results.append({'case': name, 'passed': True})
                     print('PASS:', name, flush=True)
                 except Exception as error:

@@ -5,6 +5,8 @@ import {
   normalizeSettings,
   normalizeEndpoint,
   publicSettings,
+  validateQuestion,
+  assessmentKind,
   isCourseUrl,
   requestBody,
   parseAnswer,
@@ -146,9 +148,9 @@ test('返回页面的设置不包含 API Key', () => {
   assert.equal('apiKey' in s, false);
   assert.equal('rememberKey' in s, false);
 });
-test('填写阈值和调用上限有边界，非布尔值不能开启自动提交', () => {
+test('调用上限有边界，旧阈值被忽略，非布尔值不能开启自动提交', () => {
   const s = normalizeSettings({ minConfidence: 0.1, maxCalls: 99999, autoSubmit: 'true' });
-  assert.equal(s.minConfidence, 0.8);
+  assert.ok(!('minConfidence' in s));
   assert.equal(s.maxCalls, 300);
   assert.equal(s.autoSubmit, false);
 });
@@ -205,9 +207,9 @@ test('正确解析答案及解释，兼容判断题文字与符号选项映射',
       { label: 'B', text: '' },
     ],
   };
-  assert.deepEqual(
-    parseAnswer(response({ answers: ['错误'], confidence: 0.92 }), judgeImage).answers,
-    ['B']
+  assert.equal(
+    parseAnswer(response({ answers: ['错误'], confidence: 0.92 }), judgeImage).validationKind,
+    'answer'
   );
 });
 test('不存在的选项和不完整的自评分数不能自动填写', () => {
@@ -228,6 +230,191 @@ test('截断或无法解析的模型回复明确失败', () => {
   assert.throws(
     () => parseAnswer({ choices: [{ message: { content: '答案 B' } }] }, question),
     /JSON/
+  );
+});
+
+test('选择答案兼容全角、小写、连写和重复字母，拒绝含糊说明', () => {
+  const multi = {
+    ...question,
+    type: 'multiple',
+    options: 'ABCD'.split('').map((label) => ({ label, text: '选项' + label })),
+  };
+  for (const values of [['ａ，Ｃ，Ｄ', 'A'], ['acd'], ['A', 'C', 'D', 'A']]) {
+    const result = parseAnswer(response({ answers: values, confidence: 0.8 }), multi);
+    assert.deepEqual(result.answers, ['A', 'C', 'D']);
+    assert.equal(result.validationKind, '');
+  }
+  assert.equal(
+    parseAnswer(response({ answers: ['A错了，应选B'] }), multi).validationKind,
+    'answer'
+  );
+  assert.deepEqual(parseAnswer(response({ answers: ['ｂ'], confidence: 1 }), question).answers, [
+    'B',
+  ]);
+  const ambiguous = {
+    ...multi,
+    options: multi.options.map((option) =>
+      option.label === 'A' ? { ...option, text: 'BAD' } : option
+    ),
+  };
+  assert.equal(
+    parseAnswer(response({ answers: ['BAD'], confidence: 1 }), ambiguous).validationKind,
+    'answer'
+  );
+});
+
+test('无语义的判断选项不按位置猜对错，仍接受明确字母', () => {
+  const q = {
+    text: '离线图示判断题',
+    type: 'boolean',
+    options: [
+      { label: 'A', text: '' },
+      { label: 'B', text: '' },
+    ],
+  };
+  assert.equal(
+    parseAnswer(response({ answers: ['正确'], confidence: 1 }), q).validationKind,
+    'answer'
+  );
+  assert.deepEqual(parseAnswer(response({ answers: ['b'], confidence: 1 }), q).answers, ['B']);
+});
+
+test('填空空位不被过滤或错位，答案数量必须匹配', () => {
+  const q = { text: '三个离线空位', type: 'fill', options: [], blankCount: 3 };
+  const missing = parseAnswer(response({ answers: ['first', '', 'third'], confidence: 1 }), q);
+  assert.deepEqual(missing.answers, ['first', '', 'third']);
+  assert.equal(missing.validationKind, 'answer');
+  assert.equal(
+    parseAnswer(response({ answers: ['first'], confidence: 1 }), q).validationKind,
+    'answer'
+  );
+  assert.equal(
+    parseAnswer(response({ answers: ['first', 'second', 'third'], confidence: 1 }), q)
+      .validationIssue,
+    ''
+  );
+});
+
+test('填空数量经过校验并在文字及图片请求中保留', () => {
+  const q = { text: '两个离线空位', type: 'fill', options: [], blankCount: 2 };
+  assert.equal(validateQuestion(q).blankCount, 2);
+  for (const value of [0, -1, 1.5, 31])
+    assert.throws(() => validateQuestion({ ...q, blankCount: value }), /填空/);
+  assert.equal(JSON.parse(requestBody(configured, q).messages[1].content).blankCount, 2);
+  const visual = requestBody(
+    configured,
+    { ...q, needsImage: true, captureId: 'offline-capture' },
+    false,
+    ['data:image/png;base64,AAAA']
+  );
+  assert.equal(JSON.parse(visual.messages[1].content[0].text).blankCount, 2);
+});
+
+test('连线下拉保留每空的题干和合法值，文字及截图请求均携带', () => {
+  const slots = [
+    {
+      prompt: '左侧甲',
+      options: [
+        { value: 'A', text: '定义甲' },
+        { value: 'B', text: '定义乙' },
+      ],
+    },
+    {
+      prompt: '左侧乙',
+      options: [
+        { value: 'A', text: '定义甲' },
+        { value: 'B', text: '定义乙' },
+      ],
+    },
+  ];
+  const q = { text: '离线连线', type: 'fill', options: [], blankCount: 2, slots };
+  assert.deepEqual(validateQuestion(q).slots, slots);
+  assert.deepEqual(JSON.parse(requestBody(configured, q).messages[1].content).slots, slots);
+  const body = requestBody(
+    configured,
+    { ...q, needsImage: true, captureId: 'offline-capture' },
+    false,
+    ['data:image/png;base64,AAAA']
+  );
+  assert.deepEqual(
+    JSON.parse(body.messages[1].content[0].text).slots.map((slot) =>
+      slot.options.map((o) => o.value)
+    ),
+    [
+      ['A', 'B'],
+      ['A', 'B'],
+    ]
+  );
+  assert.equal(JSON.parse(body.messages[1].content[0].text).slots[0].options[0].text, '定义甲');
+  const encoded = requestBody(
+    configured,
+    {
+      ...q,
+      needsImage: true,
+      captureId: 'offline-capture',
+      visualSignature: 'font-cxsecret|offline',
+    },
+    false,
+    ['data:image/png;base64,AAAA']
+  );
+  assert.equal(
+    'text' in JSON.parse(encoded.messages[1].content[0].text).slots[0].options[0],
+    false
+  );
+  assert.throws(() => validateQuestion({ ...q, slots: slots.slice(0, 1) }), /空位/);
+  assert.throws(
+    () =>
+      validateQuestion({
+        ...q,
+        slots: [
+          {
+            ...slots[0],
+            options: [
+              { value: 'A', text: '甲' },
+              { value: 'A', text: '乙' },
+            ],
+          },
+          slots[1],
+        ],
+      }),
+    /选项/
+  );
+});
+
+test('连线答案按各空合法值映射，重复选择保留，不允许不存在的值', () => {
+  const q = {
+    text: '离线连线',
+    type: 'fill',
+    options: [],
+    blankCount: 2,
+    slots: [
+      {
+        prompt: '甲',
+        options: [
+          { value: 'A', text: '定义甲' },
+          { value: 'B', text: '定义乙' },
+        ],
+      },
+      {
+        prompt: '乙',
+        options: [
+          { value: 'A', text: '定义甲' },
+          { value: 'B', text: '定义乙' },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(
+    parseAnswer(response({ answers: ['b', '定义甲'], confidence: 0.5 }), q).answers,
+    ['B', 'A']
+  );
+  assert.deepEqual(parseAnswer(response({ answers: ['A', 'A'], confidence: 0.5 }), q).answers, [
+    'A',
+    'A',
+  ]);
+  assert.equal(
+    parseAnswer(response({ answers: ['C', 'A'], confidence: 1 }), q).validationKind,
+    'answer'
   );
 });
 test('错误只显示状态和错误代码，不回显接口原始正文', () => {
@@ -261,4 +448,58 @@ test('无效选项不能以高自评分绕过答案校验', () => {
   const parsed = parseAnswer(response({ answers: ['不存在的选项'], confidence: 1 }), question);
   assert.equal(parsed.confidence, 0);
   assert.match(parsed.validationIssue, /选项字母/);
+});
+
+test('识别已打开的学习通与MOOC考试作业，不把外部网页视为答题页', () => {
+  assert.equal(
+    assessmentKind('https://mooc1.chaoxing.com/mooc-ans/mooc2/work/dowork?case=offline'),
+    'homework'
+  );
+  assert.equal(assessmentKind('https://mooc1.chaoxing.com/exam-ans/exam/test'), 'exam');
+  assert.equal(assessmentKind('https://www.icourse163.org/learn/offline#/learn/exam?id=1'), 'exam');
+  assert.equal(
+    assessmentKind('https://www.icourse163.org/learn/offline#/learn/homework'),
+    'homework'
+  );
+  assert.equal(assessmentKind('https://mooc1.chaoxing.com/mycourse/studentstudy'), '');
+  assert.equal(assessmentKind('https://outside.example.test/exam/test'), '');
+});
+
+test('考试作业支持默认开启，可以关闭并保存', () => {
+  assert.equal(normalizeSettings({}).autoAssessments, true);
+  assert.equal(normalizeSettings({ autoAssessments: false }).autoAssessments, false);
+});
+
+test('文本题字数要求规范化并拒绝无效长度', () => {
+  const essay = { text: '离线写作题', type: 'text', options: [], minLength: 800 };
+  assert.equal(validateQuestion(essay).minLength, 800);
+  assert.throws(() => validateQuestion({ ...essay, minLength: 20001 }), /字数要求/);
+  assert.throws(() => validateQuestion({ ...essay, minLength: -1 }), /字数要求/);
+  assert.ok(!('minLength' in validateQuestion({ ...essay, type: 'single' })));
+});
+
+test('文字和截图复核均携带正文最低字数', () => {
+  const essay = { text: '离线写作题', type: 'text', options: [], minLength: 800 };
+  assert.equal(JSON.parse(requestBody(configured, essay).messages[1].content).minLength, 800);
+  const body = requestBody(
+    { ...configured, visionModel: 'fixture-vision' },
+    { ...essay, needsImage: true, captureId: 'offline-essay-image' },
+    false,
+    ['data:image/png;base64,AAAA']
+  );
+  assert.equal(JSON.parse(body.messages[1].content[0].text).minLength, 800);
+});
+
+test('正文不能以空白或编辑器占位符凑够字数，完整正文保留', () => {
+  const essay = { text: '离线写作题', type: 'text', options: [], minLength: 800 };
+  const short = parseAnswer(
+    response({ answers: ['甲'.repeat(799) + ' \n\u200b'.repeat(50)], confidence: 0.99 }),
+    essay
+  );
+  assert.equal(short.validationKind, 'answer');
+  assert.match(short.validationIssue, /799.*800/);
+  assert.equal(
+    parseAnswer(response({ answers: ['甲'.repeat(800)], confidence: 0.96 }), essay).validationIssue,
+    ''
+  );
 });

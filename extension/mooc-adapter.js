@@ -223,8 +223,12 @@
     } else node.click();
     return true;
   }
-  function blockReason() {
-    if (/#\/learn\/(?:exam|homework|forum)|\/(?:exam|peer-assessment)(?:\/|$)/.test(location.href))
+  function blockReason(settings = {}) {
+    if (
+      /#\/learn\/forum|\/peer-assessment(?:\/|$)/.test(location.href) ||
+      (!settings.autoAssessments &&
+        /#\/learn\/(?:exam|homework)|\/exam(?:\/|$)/.test(location.href))
+    )
       return '当前内容为考试、互评作业或讨论，请本人处理后再继续课程托管。';
     if (all('.j-loginBar,.playPause .j-login,[data-mooc-login-required]').some(visible))
       return 'MOOC需要登录或当前登录已失效，请在MOOC窗口完成登录。';
@@ -238,9 +242,18 @@
     );
   }
   function inspectRoot(root) {
-    return all('input,textarea,[contenteditable=true],[role=radio],[role=checkbox]', root).some(
-      (node) =>
-        !node.disabled && !node.readOnly && visible(node.closest('label,.answer-item') || node)
+    return (
+      all('iframe', root).some((frame) => {
+        try {
+          return visible(frame) && frame.contentDocument?.body?.isContentEditable;
+        } catch {
+          return false;
+        }
+      }) ||
+      all('input,textarea,[contenteditable=true],[role=radio],[role=checkbox]', root).some(
+        (node) =>
+          !node.disabled && !node.readOnly && visible(node.closest('label,.answer-item') || node)
+      )
     );
   }
   async function observe(api) {

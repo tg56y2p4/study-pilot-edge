@@ -1,6 +1,141 @@
 // The debugger connection exists only during capture. It never reads cookies,
 // network traffic or credentials, and no screenshot is retained in storage.
 const captures = new Map();
+
+export async function writeChoiceSelect(tabId, frameId, token, value, expected) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    world: 'MAIN',
+    args: [token, value, expected],
+    func: (token, value, expected) => {
+      const field = document.querySelector('select[data-keban-select="' + token + '"]');
+      if (!field?.isConnected || field.disabled) return { written: false };
+      if (field.value !== expected) return { written: false, changed: true };
+      const option = [...field.options].find(
+        (option) => option.value === value && !option.disabled
+      );
+      if (!option) return { written: false };
+      const win = field.ownerDocument.defaultView;
+      Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value').set.call(
+        field,
+        value
+      );
+      field.dispatchEvent(new win.Event('input', { bubbles: true }));
+      field.dispatchEvent(new win.Event('change', { bubbles: true }));
+      if (typeof win.jQuery === 'function') win.jQuery(field).trigger('chosen:updated');
+      else {
+        const label = field.parentElement.querySelector('.chosen-single span');
+        if (label) label.textContent = option.textContent;
+      }
+      return { written: field.value === value };
+    },
+  });
+  return results[0]?.result || { written: false };
+}
+
+// Only the marked editable field in the requesting course frame is writable.
+// Editor APIs live in the page world, outside the extension's isolated world.
+export async function writeRichEditor(
+  tabId,
+  frameId,
+  fieldToken,
+  value,
+  expected,
+  syncOnly = false
+) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    world: 'MAIN',
+    args: [fieldToken, value, expected, syncOnly],
+    func: (token, text, before, synchronizeOnly) => {
+      const normalize = (value) =>
+        String(value || '')
+          .normalize('NFKC')
+          .replace(/[\u200b\ufeff]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const documents = [document];
+      for (let i = 0; i < documents.length && i < 32; i++) {
+        for (const frame of documents[i].querySelectorAll('iframe')) {
+          try {
+            if (frame.contentDocument && !documents.includes(frame.contentDocument))
+              documents.push(frame.contentDocument);
+          } catch {}
+        }
+      }
+      const target = documents
+        .map((doc) => doc.querySelector('[data-keban-editor="' + token + '"]'))
+        .find(Boolean);
+      if (
+        !target?.isConnected ||
+        (!target.isContentEditable && target.ownerDocument.designMode !== 'on')
+      )
+        return { written: false, retryable: true };
+      if (normalize(target.innerText) !== normalize(before))
+        return { written: false, changed: true };
+      const doc = target.ownerDocument;
+      const container = doc.createElement('div');
+      for (const line of text.split('\n')) {
+        const paragraph = doc.createElement('p');
+        if (line) paragraph.textContent = line;
+        else paragraph.append(doc.createElement('br'));
+        container.append(paragraph);
+      }
+      const html = container.innerHTML;
+      let editor;
+      for (const candidate of documents) {
+        const instances = candidate.defaultView?.UE?.instants || {};
+        editor = Object.values(instances).find((instance) => instance?.body === target);
+        if (editor) break;
+      }
+      if (editor) {
+        if (
+          !editor.isReady ||
+          typeof editor.setContent !== 'function' ||
+          typeof editor.sync !== 'function'
+        )
+          return { written: false, retryable: true };
+        if (!synchronizeOnly) editor.setContent(html);
+        editor.sync();
+        let stored = editor.textarea;
+        if (typeof stored === 'string') {
+          stored = documents
+            .map(
+              (item) =>
+                item.getElementById('ueditor_textarea_' + editor.options?.textarea) ||
+                item.getElementById(stored)
+            )
+            .find(Boolean);
+        }
+        if (stored?.tagName === 'TEXTAREA') {
+          const copy = doc.createElement('template');
+          copy.innerHTML = stored.value;
+          for (const block of copy.content.querySelectorAll('p,div,li,br'))
+            block.append(doc.createTextNode('\n'));
+          if (normalize(copy.content.textContent) !== normalize(text))
+            return { written: false, reason: '编辑器正文与提交字段尚未同步。' };
+        }
+      } else {
+        const frame = doc.defaultView.frameElement;
+        if (frame?.closest('.edui-editor')) return { written: false, retryable: true };
+        if (!synchronizeOnly) target.replaceChildren(...container.childNodes);
+      }
+      const win = doc.defaultView;
+      if (!synchronizeOnly || !editor) {
+        target.dispatchEvent(
+          new win.InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })
+        );
+        target.dispatchEvent(new win.Event('change', { bubbles: true }));
+        target.dispatchEvent(new win.Event('blur', { bubbles: true }));
+      }
+      return {
+        written: normalize(target.innerText) === normalize(text),
+        editor: editor ? 'ueditor' : 'contenteditable',
+      };
+    },
+  });
+  return results[0]?.result || { written: false };
+}
 function descendants(node, predicate, budget = { left: 150000 }) {
   if (--budget.left < 0) return null;
   if (predicate(node)) return node;

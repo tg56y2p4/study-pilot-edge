@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 HOST='https://mooc1.chaoxing.com'
 Q='<div class="TiMu"><h3 class="Zy_TItle">【单选题】流程题：2+2？</h3><label><input type="radio" name="one" value="A">3</label><label><input type="radio" name="one" value="B">4</label></div>'
 FORM=Q+'''<button id="submit" onclick="top.openConfirm()">提交</button>'''
-CONFIRM='''<div id="confirmation" class="popDiv" hidden>确认提交？<button id="confirm" onclick="this.parentElement.hidden=true;document.querySelector('#work').contentWindow.document.body.innerHTML='<div class=testTit_status_complete>已完成</div>';document.body.dataset.submitted='yes'">提交</button></div>'''
+CONFIRM='''<div id="confirmation" class="popDiv" hidden>确认提交？<button id="confirm" onclick="this.parentElement.hidden=true;document.body.dataset.selection=document.querySelector('#work').contentWindow.document.querySelector('input:checked')?.value;document.querySelector('#work').contentWindow.document.body.innerHTML='<div class=testTit_status_complete>已完成</div>';document.body.dataset.submitted='yes'">提交</button></div>'''
 BASE='<!doctype html><meta charset="utf-8"><style>body{font:16px sans-serif;margin:25px}iframe{width:700px;height:320px}button{padding:8px}li{cursor:pointer}</style>'
 fixtures={
  '/slow':BASE+'''<iframe id="work" src="/form"></iframe>'''+CONFIRM+'''<script>window.openConfirm=()=>document.getElementById('confirmation').hidden=false</script>''',
@@ -80,7 +80,7 @@ with sync_playwright() as p:
  if args.only:print('TRACE: options ready',flush=True)
  def msg(kind,**extra):
   r=o.evaluate('(m)=>chrome.runtime.sendMessage(m)',{'type':kind,**extra});assert r['ok'],r;return r['data']
- s=msg('KP_GET_SETTINGS');s.update(reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-workflow-only',autoSubmit=True,autoConfirm=True,visualAgent=True,agentInterval=8000,requestGap=2000,readingInterval=1000);msg('KP_SAVE_SETTINGS',settings=s)
+ s=msg('KP_GET_SETTINGS');s.update(confidenceGate=True, reviewEnabled=False,reviewProfiles=[],endpoint='https://maas.qianwenaiapi.com/compatible-mode/v1',visionModel='fixture-vision',apiKey='fixture-workflow-only',autoSubmit=True,autoConfirm=True,visualAgent=True,agentInterval=8000,requestGap=2000,readingInterval=1000);msg('KP_SAVE_SETTINGS',settings=s)
  for name in ([args.only] if args.only else CASES):
   s=msg('KP_GET_SETTINGS');s['model']='fixture-'+name;msg('KP_SAVE_SETTINGS',settings=s)
   page=c.new_page();page.goto(HOST+'/'+name);page.wait_for_load_state('networkidle')
@@ -119,17 +119,16 @@ with sync_playwright() as p:
     page.locator('#arrived').wait_for(timeout=40000)
     if name=='reading':
      st=msg('KP_STATUS',tabId=tab);assert any('阅读资源不可用' in x['text'] for x in st['logs']);assert any('已浏览当前阅读页面' in x['text'] for x in st['logs'])
-   elif name in ['terminal','mismatch','reading-missing']:
+   elif name in ['terminal','reading-missing']:
     deadline=datetime.now().timestamp()+35
     while msg('KP_STATUS',tabId=tab)['running'] and datetime.now().timestamp()<deadline:page.wait_for_timeout(200)
     st=msg('KP_STATUS',tabId=tab);assert not st['running'],st
     if name=='terminal':assert st.get('completed') and not st.get('blocked')
-    elif name=='mismatch':
-     frame=page.frame(url=HOST+'/wrong-filled');assert frame.locator('input[value=A]').is_checked() and '复核' in st['blocked']
     else:assert '专题阅读资源均无法打开' in st['blocked']
    else:
     page.locator('body[data-submitted=yes]').wait_for(timeout=28000)
     assert w.evaluate('planCalls')==0,'Planner ran while a course exercise was being processed'
+    if name=='mismatch':assert page.get_attribute('body','data-selection')=='B', 'Replace the previous A and submit the reviewed B'
     if name=='transient':assert msg('KP_STATUS',tabId=tab)['calls']==2
    results.append({'case':name,'passed':True});print('PASS:',name,flush=True)
   except Exception as e:

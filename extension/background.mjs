@@ -4,6 +4,7 @@ import {
   publicSettings,
   isCourseUrl,
   coursePlatform,
+  assessmentKind,
   validateQuestion,
   requestBody,
   parseAnswer,
@@ -15,7 +16,8 @@ import {
 import {
   questionIdentity,
   answerSignature,
-  usableAnswer,
+  actionableAnswer,
+  remainingChoice,
   reviewConnections,
   reviewRequestBody,
   reviewAnswer,
@@ -23,7 +25,13 @@ import {
 } from './review.mjs';
 import { resolveApiKey, listModels } from './api.mjs';
 import { mergeTasks, normalizeTask, clearTask, pendingSummary, taskKey } from './mooc-tasks.mjs';
-import { captureCourse, playCourseMedia, activateMoocCourse } from './vision.mjs';
+import {
+  captureCourse,
+  playCourseMedia,
+  activateMoocCourse,
+  writeRichEditor,
+  writeChoiceSelect,
+} from './vision.mjs';
 
 // Content scripts never read these storage areas directly. Nothing uses storage.sync.
 function apiOrigin(endpoint) {
@@ -108,6 +116,14 @@ function log(s, text, level = 'info') {
 }
 async function broadcast(tabId, message) {
   try {
+    if (message.type === 'KP_WAKE' || message.type === 'KP_SOLVE_PAGE') {
+      const st = await state(tabId);
+      message = {
+        ...message,
+        generation: st.generation,
+        fieldWritesAllowed: st.running || (st.manualUntil || 0) > Date.now(),
+      };
+    }
     await chrome.tabs.sendMessage(tabId, message);
   } catch {
     /* no accessible frame yet */
@@ -325,7 +341,7 @@ async function solve(message, sender) {
         ? { needsReview: true, unverified: true, rejectedAnswers: [] }
         : knownFeedback;
     let images = [];
-    if (question.needsImage) {
+    if (question.needsImage && !remainingChoice(question, feedback)) {
       if (!s.useVision) throw new Error('当前关闭了图片识别，请在设置中启用。');
       images = [await captureCourse(id, question.captureId)];
     }
@@ -341,7 +357,7 @@ async function solve(message, sender) {
       images.length ? await imageDigest(images[0]) : '',
     ]);
     const cached = cache.get(fingerprint);
-    if (usableAnswer(cached, s.minConfidence, feedback.rejectedAnswers, question.type))
+    if (actionableAnswer(cached, s, feedback.rejectedAnswers, question.type))
       return recordAnswer(id, generation, question, cached, true);
     const controller = new AbortController();
     activeRequests.set(id, controller);
@@ -429,7 +445,7 @@ async function solve(message, sender) {
       if (after.generation !== generation || after.blocked || controller.signal.aborted)
         throw stopped();
       const result = await recordAnswer(id, generation, question, answer, false, true);
-      if (usableAnswer(answer, s.minConfidence, feedback.rejectedAnswers, question.type))
+      if (actionableAnswer(answer, s, feedback.rejectedAnswers, question.type))
         cache.set(fingerprint, { ...answer, questionId });
       else cache.delete(fingerprint);
       if (cache.size > 200) cache.delete(cache.keys().next().value);
@@ -565,7 +581,7 @@ async function visualStep(message, sender) {
         log(current, `视觉判断：${plan.reason}`);
         await saveState(id, current);
       });
-      if (plan.action === 'pause' || plan.confidence < s.minConfidence) {
+      if (plan.action === 'pause') {
         await pauseTab(id, plan.reason || '视觉判断需要手动确认。');
         return { paused: true };
       }
@@ -624,28 +640,6 @@ async function pauseTab(id, reason) {
 async function route(m, sender) {
   await ready;
   if (!m || typeof m.type !== 'string') throw new Error('无效请求。');
-  if (
-    m.type === 'KP_RETRY_LOW' &&
-    (trusted(sender) || (courseSender(sender) && sender.frameId === 0))
-  ) {
-    const tab = await courseTab(trusted(sender) ? m.tabId : sender.tab.id);
-    const config = await settings();
-    if (!config.apiKey || !config.endpoint || !config.model)
-      throw new Error('请先保存API地址、Key和文字模型。');
-    await queue(tab.id, async () => {
-      const st = await state(tab.id);
-      if (st.submission) throw new Error('请先处理当前提交确认或等待平台返回结果。');
-      st.running = false;
-      st.blocked = '';
-      st.generation++;
-      st.manualUntil = Date.now() + 120000;
-      log(st, '正在重新解析未达到阈值的题目；保留已有作答，不自动提交。');
-      await saveState(tab.id, st);
-    });
-    activeRequests.get(tab.id)?.abort();
-    await broadcast(tab.id, { type: 'KP_SOLVE_PAGE' });
-    return { ok: true };
-  }
   if (trusted(sender)) {
     if (m.type === 'KP_GET_SETTINGS') {
       const s = await settings();
@@ -786,12 +780,13 @@ async function route(m, sender) {
         )
           throw new Error('请先选择图片模型，或关闭图片识题与视觉操作。');
       }
-      if (m.type === 'KP_STOP') activeRequests.get(tab.id)?.abort();
+      if (m.type === 'KP_STOP' || m.type === 'KP_SCAN') activeRequests.get(tab.id)?.abort();
       await queue(tab.id, async () => {
         const st = await state(tab.id);
         if (m.type === 'KP_START') {
           st.running = true;
           st.completed = false;
+          st.assessmentCompleted = '';
           st.blocked = '';
           st.generation++;
           st.calls = 0;
@@ -815,10 +810,18 @@ async function route(m, sender) {
           st.generation++;
           log(st, '已停止托管。');
         }
+        if (m.type === 'KP_FILL') st.manualUntil = Date.now() + 120000;
         if (m.type === 'KP_SCAN') {
+          if (st.submission) throw new Error('正在等待本次提交结果，请稍候。');
+          st.running = true;
+          st.completed = false;
+          st.assessmentCompleted = '';
           st.blocked = '';
+          st.generation++;
+          st.reviewTask = null;
+          st.frames = {};
           st.manualUntil = Date.now() + 120000;
-          log(st, '正在解析本页可识别的题目。');
+          log(st, '正在解析并自动作答，复核后继续填写和提交。');
         }
         await saveState(tab.id, st);
       });
@@ -1101,6 +1104,62 @@ async function route(m, sender) {
         return { played: false };
       }
     }
+    if (m.type === 'KP_EDITOR_WRITE' || m.type === 'KP_SELECT_WRITE') {
+      const st = await state(id),
+        config = await settings();
+      const syncOnly = m.type === 'KP_EDITOR_WRITE' && m.syncOnly === true;
+      if (
+        st.generation !== m.generation ||
+        !(
+          (st.running && (config.autoFill || (syncOnly && config.autoSubmit))) ||
+          (st.manualUntil || 0) > Date.now()
+        ) ||
+        (assessmentKind(sender.tab.url) && !config.autoAssessments)
+      )
+        return { written: false, stopped: true };
+      if (
+        !/^[a-zA-Z0-9_-]{8,80}$/.test(m.fieldToken || '') ||
+        typeof m.value !== 'string' ||
+        m.value.length > 20000 ||
+        typeof m.expected !== 'string' ||
+        m.expected.length > 20000
+      )
+        throw new Error('编辑器写入请求格式不正确。');
+      if (m.type === 'KP_SELECT_WRITE')
+        return writeChoiceSelect(id, sender.frameId, m.fieldToken, m.value, m.expected);
+      return writeRichEditor(
+        id,
+        sender.frameId,
+        m.fieldToken,
+        m.value,
+        m.expected,
+        m.syncOnly === true
+      );
+    }
+    if (m.type === 'KP_ASSESSMENT_DONE')
+      return queue(id, async () => {
+        const st = await state(id),
+          config = await settings(),
+          kind = assessmentKind(sender.tab.url);
+        if (
+          !st.running ||
+          st.generation !== m.generation ||
+          !config.autoAssessments ||
+          !kind ||
+          (sender.frameId !== 0 && !st.frames?.[sender.frameId]?.completed)
+        )
+          return { completed: false };
+        st.running = false;
+        st.completed = true;
+        st.blocked = '';
+        st.submission = null;
+        st.reviewTask = null;
+        st.assessmentCompleted = kind;
+        st.generation++;
+        log(st, kind === 'exam' ? '已确认本次考试交卷完成。' : '已确认本次作业提交完成。');
+        await saveState(id, st);
+        return { completed: true };
+      });
     if (m.type === 'KP_KEEP_ACTIVE' && sender.frameId === 0) {
       const st = await state(id),
         s = await settings();
@@ -1228,6 +1287,9 @@ async function route(m, sender) {
             previous,
           })),
         context: st.context,
+        assessment: assessmentKind(sender.tab.url),
+        completed: st.completed,
+        assessmentCompleted: st.assessmentCompleted,
         progress: st.progress,
         reading: st.readingReturn?.active
           ? { active: true, started: st.readingReturn.started }
@@ -1380,20 +1442,18 @@ async function route(m, sender) {
         ].slice(-80);
         st.submission = null;
         st.reviewTask = null;
-        const config = await settings();
         const exhausted = affected.some(
           (proof) =>
             st.answerFeedback.find(
               (item) => item.scope === scope && item.questionId === proof.questionId
             )?.count >= 3
         );
-        if (!config.reviewEnabled || exhausted) {
+        if (exhausted) {
           st.running = false;
           st.manualUntil = 0;
           st.generation++;
-          st.blocked = exhausted
-            ? '平台多次判错，自动纠正已停止；请核对课程语境或平台答案。已拒绝答案不会原样重交。'
-            : '平台提示回答错误；已停止重复提交。请启用自检并配置辅助模型后重新开始。';
+          st.blocked =
+            '平台多次判错，自动纠正已停止；请核对课程语境或平台答案。已拒绝答案不会原样重交。';
           log(st, st.blocked, 'warn');
         } else log(st, '平台提示回答错误，已排除本次答案并启动重新作答和辅助复核。', 'warn');
         await saveState(id, st);

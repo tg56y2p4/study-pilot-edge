@@ -33,8 +33,8 @@ with sync_playwright() as p:
   r=page.evaluate('(m)=>chrome.runtime.sendMessage(m)',{'type':kind,**extra});assert r['ok'],r;return r['data']
  def pull():page.locator('#fetchModels').click();expect(page.locator('#fetchModels')).to_be_enabled(timeout=10000)
  try:
-  expect(page.locator('#endpoint')).to_have_value('');expect(page.locator('#model')).to_have_value('');expect(page.locator('#apiKey')).to_have_value('');record('Fresh installation contains no personal endpoint, model or Key')
-  page.set_viewport_size({'width':1240,'height':1800});bounds=page.locator('.setup-layout').bounding_box();page.screenshot(path=str(OUT/'settings-empty-v060.png'),clip={'x':0,'y':0,'width':1240,'height':bounds['y']+bounds['height']+20})
+  expect(page.locator('#endpoint')).to_have_value('');expect(page.locator('#model')).to_have_value('');expect(page.locator('#apiKey')).to_have_value('');expect(page.locator('#confidenceGate')).to_have_count(0);expect(page.locator('#minConfidence')).to_have_count(0);expect(page.locator('#autoAssessments')).to_be_checked();page.set_viewport_size({'width':1280,'height':1600});page.locator('#autoAssessments').locator('xpath=ancestor::fieldset').screenshot(path=str(OUT/'settings-assessments-v084.png'));record('Fresh installation contains no personal endpoint, model or Key')
+  page.set_viewport_size({'width':1240,'height':1800});page.evaluate('window.scrollTo(0,0)');bounds=page.locator('.setup-layout').bounding_box();page.screenshot(path=str(OUT/'settings-empty-v060.png'),clip={'x':0,'y':0,'width':1240,'height':bounds['y']+bounds['height']+20})
   page.locator('#endpoint').fill('https://api.chaoxing.com/proxy/v1');page.locator('#apiKey').fill('fixture-models-only');pull();expect(page.locator('#modelMessage')).to_contain_text('4 个模型')
   assert page.locator('#modelSelect option[value="text-standard"]').count()==1
   assert page.locator('#modelSelect option[value="image-only"]').count()==0

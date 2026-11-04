@@ -14,6 +14,9 @@ export function questionIdentity(question) {
     question.text,
     question.options,
     String(question.visualSignature || '').slice(0, 2000),
+    ...(question.slots ? [question.slots] : []),
+    ...(question.blankCount ? [question.blankCount] : []),
+    ...(question.minLength ? [question.minLength] : []),
   ]);
 }
 
@@ -24,17 +27,50 @@ export function answerSignature(answer, type = 'single') {
   return JSON.stringify(['single', 'multiple', 'boolean'].includes(type) ? values.sort() : values);
 }
 
-export function usableAnswer(answer, threshold, rejected = [], type = 'single') {
+export function usableAnswer(answer, rejected = [], type = 'single') {
   return !!(
     answer?.answers?.length &&
-    Number.isFinite(answer.confidence) &&
-    answer.confidence >= threshold &&
-    !answer.validationIssue &&
+    (!answer.validationIssue || answer.validationKind === 'confidence') &&
     !answer.uncertain &&
     !answer.reviewIssue &&
     !answer.platformRejected &&
     !rejected.some((previous) => answerSignature(previous, type) === answerSignature(answer, type))
   );
+}
+
+export function actionableAnswer(answer, settings, rejected = [], type = 'single') {
+  if (usableAnswer(answer, rejected, type)) return true;
+  return !!(
+    answer?.review?.status === 'best_effort' &&
+    answer.answers?.length &&
+    (!answer.validationIssue || answer.validationKind === 'confidence') &&
+    !answer.reviewIssue &&
+    !answer.platformRejected &&
+    !rejected.some((previous) => answerSignature(previous, type) === answerSignature(answer, type))
+  );
+}
+
+export function remainingChoice(question, feedback = {}) {
+  if (
+    !feedback.needsReview ||
+    feedback.unverified ||
+    !['single', 'boolean'].includes(question.type)
+  )
+    return '';
+  const labels = (question.options || []).map((option) => option.label);
+  const rejected = feedback.rejectedAnswers;
+  if (
+    labels.length < 2 ||
+    new Set(labels).size !== labels.length ||
+    !Array.isArray(rejected) ||
+    !rejected.length ||
+    rejected.some(
+      (values) => !Array.isArray(values) || values.length !== 1 || !labels.includes(values[0])
+    )
+  )
+    return '';
+  const left = labels.filter((label) => !rejected.some((values) => values[0] === label));
+  return left.length === 1 ? left[0] : '';
 }
 
 function evidence(answer) {
@@ -109,11 +145,28 @@ export function reviewConnections(settings, visual = false) {
 }
 
 export async function reviewAnswer({ settings, question, visual = false, feedback = {}, call }) {
+  const remaining = remainingChoice(question, feedback);
+  if (remaining)
+    return {
+      answers: [remaining],
+      confidence: 1,
+      tokens: 0,
+      validationIssue: '',
+      validationKind: '',
+      uncertain: false,
+      explanation: '平台已明确否定其他选项，本题只剩下 ' + remaining + '，自动改选并继续提交。',
+      reviewIssue: '',
+      review: {
+        status: 'platform_inferred',
+        reason: '依据平台判错记录排除选项，不依赖模型自评分。',
+        stages: [],
+      },
+    };
   const { primary, assistants } = reviewConnections(settings, visual);
   const stages = [];
   const candidates = [];
   const rejected = feedback.rejectedAnswers || [];
-  const valid = (answer) => usableAnswer(answer, settings.minConfidence, rejected, question.type);
+  const valid = (answer) => usableAnswer(answer, rejected, question.type);
   const same = (a, b) => answerSignature(a, question.type) === answerSignature(b, question.type);
   let tokens = 0;
   async function stage(config, phase, previous = []) {
@@ -124,6 +177,7 @@ export async function reviewAnswer({ settings, question, visual = false, feedbac
         ...answer,
         model: config.model,
         identity: JSON.stringify([config.endpoint, config.model]),
+        phase,
       };
       candidates.push(item);
       stages.push({ phase, label: REVIEW_PHASES[phase], model: config.model, ...evidence(answer) });
@@ -140,7 +194,7 @@ export async function reviewAnswer({ settings, question, visual = false, feedbac
     }
   }
   function finish(answer, status, reason) {
-    const { identity, ...safeAnswer } = answer || {
+    const { identity, phase, ...safeAnswer } = answer || {
       answers: [],
       confidence: 0,
       explanation: '',
@@ -152,6 +206,41 @@ export async function reviewAnswer({ settings, question, visual = false, feedbac
       reviewIssue: status === 'unresolved' ? reason : '',
       review: { status, reason, stages },
     };
+  }
+  function candidateAllowed(answer) {
+    if (
+      !answer?.answers?.length ||
+      answer.platformRejected ||
+      (answer.validationIssue && answer.validationKind !== 'confidence') ||
+      rejected.some(
+        (previous) =>
+          answerSignature(previous, question.type) === answerSignature(answer, question.type)
+      )
+    )
+      return false;
+    if (
+      question.options.length &&
+      (!answer.answers.every((value) =>
+        question.options.some((option) => option.label === value)
+      ) ||
+        (question.type !== 'multiple' && answer.answers.length !== 1))
+    )
+      return false;
+    return true;
+  }
+  function bestEffort() {
+    const last = candidates.at(-1);
+    if (last?.phase === 'final' && candidateAllowed(last)) return last;
+    const latest = new Map();
+    for (const candidate of candidates)
+      if (candidateAllowed(candidate)) latest.set(candidate.identity, candidate);
+    const available = [...latest.values()];
+    const votes = (candidate) => available.filter((item) => same(item, candidate)).length;
+    return (
+      available.sort(
+        (a, b) => votes(b) - votes(a) || candidates.indexOf(b) - candidates.indexOf(a)
+      )[0] || null
+    );
   }
   function agreement() {
     const latest = new Map();
@@ -168,12 +257,16 @@ export async function reviewAnswer({ settings, question, visual = false, feedbac
     return null;
   }
   const initial = await stage(primary, 'solve');
-  if (!settings.reviewEnabled)
+  if (!settings.reviewEnabled) {
+    const fallback = !valid(initial) && bestEffort();
+    if (fallback)
+      return finish(fallback, 'best_effort', '已自动采用模型的有效候选；自评分仅供参考。');
     return finish(
       initial,
       valid(initial) ? 'single' : 'unresolved',
-      '单模型模式；需要复核后继续。'
+      '已取得单模型答案，继续自动作答。'
     );
+  }
   const checked = await stage(primary, 'self-check', [initial]);
   const escalation =
     feedback.needsReview || !valid(initial) || !valid(checked) || !same(initial, checked);
@@ -194,11 +287,20 @@ export async function reviewAnswer({ settings, question, visual = false, feedbac
     if (agreed) return finish(agreed, 'adjudicated', '比较分歧后，最终判别与辅助模型一致。');
   }
   const latest = checked || initial;
+  const fallback = bestEffort();
+  if (fallback)
+    return finish(
+      fallback,
+      'best_effort',
+      fallback.phase === 'final'
+        ? '已完成复核，自动采用最终判别的有效答案；自评分仅供参考。'
+        : '已完成复核，自动采用有效候选答案；自评分仅供参考。'
+    );
   return finish(
     latest,
     'unresolved',
     !assistants.length
-      ? '本题需要独立辅助复核，请在设置中添加不同的辅助模型。'
-      : '主辅模型复核仍未取得达到阈值的一致结论，请核对课程语境后继续。'
+      ? '模型未返回可填写的有效答案。'
+      : '本轮模型均未返回有效且未被平台否定的答案。'
   );
 }

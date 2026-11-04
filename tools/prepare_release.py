@@ -69,7 +69,7 @@ def verify_artifacts(root, folder, version):
     _manifest, expected_install = extension_payload(root)
     if install != expected_install:
         raise ValueError('Install archive does not match the current extension and documents')
-    expected_suites = {'unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending', 'stability', 'review'}
+    expected_suites = {'unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending', 'stability', 'review', 'assessments', 'adapters'}
     counts = checks.get('checks', {})
     if (checks.get('source_fingerprint') != source_fingerprint(root)
             or set(counts) != expected_suites
@@ -92,7 +92,7 @@ def release_notes(metadata, checks=None, checks_url=None):
         if not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+', checks_url):
             raise ValueError('Unexpected checks URL')
         text += f'[本次 GitHub Actions]({checks_url})。\n\n'
-    text += '本项目使用 MIT 许可证。验证码、考试、独立完成声明和课程讨论由本人按课程要求处理。\n'
+    text += '本项目使用 MIT 许可证。验证码、独立完成声明和课程讨论由本人按课程要求处理。\n'
     return text
 
 

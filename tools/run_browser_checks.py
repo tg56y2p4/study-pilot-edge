@@ -9,7 +9,7 @@ from pathlib import Path
 from release_lib import source_fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = ['browser_check.py', 'models_browser_check.py', 'workflow_check.py', 'mooc_check.py', 'mooc_pending_check.py', 'stability_check.py', 'review_check.py']
+SUITES = ['browser_check.py', 'models_browser_check.py', 'workflow_check.py', 'mooc_check.py', 'mooc_pending_check.py', 'stability_check.py', 'review_check.py', 'assessments_check.py', 'answer_adapters_check.py']
 
 
 def main():

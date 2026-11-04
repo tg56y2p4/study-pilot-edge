@@ -90,8 +90,8 @@ class ReleasePreparationTests(unittest.TestCase):
 
     def build_fixture(self, extra_source=None, fingerprint=None):
         _manifest, payload = extension_payload(self.root)
-        counts = {name: 1 for name in ['unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending', 'stability', 'review']}
-        checks = {'source_fingerprint': fingerprint or source_fingerprint(self.root), 'checks': counts, 'total': 8,
+        counts = {name: 1 for name in ['unit', 'edge_or_chromium', 'models', 'workflow', 'mooc', 'pending', 'stability', 'review', 'assessments', 'adapters']}
+        checks = {'source_fingerprint': fingerprint or source_fingerprint(self.root), 'checks': counts, 'total': sum(counts.values()),
                   'real_api_tested': False, 'real_course_tested': False}
         payload['CHECKS.json'] = json.dumps(checks).encode('utf-8')
         install_name = f'study-pilot-edge-v{self.version}.zip'

@@ -4,10 +4,15 @@
   const topFrame = window === window.top;
   const adapter = globalThis.__KEBAN_ADAPTER__;
   const answers = new Map();
+  const answerBaselines = new Map();
+  const localSaves = new WeakMap();
+  const savedEditorFields = new WeakMap();
   const attempts = new Set();
   const retryAfter = new Map();
   const questionDigests = new Map();
   const corrections = new Map();
+  let pageCorrection = null;
+  let assessmentMove = null;
   const handledRejections = new Set();
   let lastSubmitted = null;
   const media = new WeakMap();
@@ -81,6 +86,9 @@
         text: String(option.text || '').slice(0, 2000),
       })),
       String(q.visualSignature || '').slice(0, 2000),
+      ...(q.slots ? [q.slots] : []),
+      ...(q.blankCount ? [q.blankCount] : []),
+      ...(q.minLength ? [q.minLength] : []),
     ]);
   async function questionDigest(q) {
     const key = questionKey(q);
@@ -113,11 +121,11 @@
     );
   }
   function answerReliable(answer) {
+    const adopted = answer?.review?.status === 'best_effort';
     return !!(
       answer?.answers?.length &&
-      answer.confidence >= current.settings.minConfidence &&
-      !answer.validationIssue &&
-      !answer.uncertain &&
+      (!answer.validationIssue || answer.validationKind === 'confidence') &&
+      (adopted || !answer.uncertain) &&
       !answer.reviewIssue &&
       !answer.platformRejected
     );
@@ -126,10 +134,10 @@
     'checked' in node
       ? node.checked
       : node.matches(
-          '.checked, .selected, .check_answer, .on, .cur, .active, .is-checked, .tkItem_li_cur, .ans-videoquiz-opt-checked, [aria-checked="true"], [aria-selected="true"]'
+          '.checked, .selected, .check_answer, .check_answer_dx, .on, .cur, .active, .is-checked, .tkItem_li_cur, .ans-videoquiz-opt-checked, [aria-checked="true"], [aria-selected="true"]'
         ) ||
         !!node.querySelector(
-          '.num_option.check_answer, .num_option_dx.check_answer, .check_answer, .on, .cur, .active, .is-checked, input:checked'
+          '.num_option.check_answer, .num_option_dx.check_answer, .check_answer, .check_answer_dx, .on, .cur, .active, .is-checked, input:checked'
         );
   const taskTabs = () => all('[id^="dct"]').filter((el) => /^dct\d+$/.test(el.id) && visible(el));
   const tabKey = (el) => el.getAttribute('cardid') || el.id;
@@ -216,7 +224,26 @@
     if (text.length > 40 || all('canvas,img').some(visible))
       await send('KP_READING_RETURN', { failed: false });
   }
-  const fieldValue = (el) => el.value ?? el.innerText ?? el.textContent ?? '';
+  const fieldValue = (el) => {
+    const value = el.value ?? el.innerText ?? el.textContent ?? '';
+    return richField(el) ? value.replace(/[\u200b\ufeff]/g, '') : value;
+  };
+  const editorUi =
+    '.edui-editor-toolbarbox,.edui-toolbar,.edui-popup,.edui-dialog,.cke_top,.tox-toolbar,[role=toolbar]';
+  const richField = (el) =>
+    el.isContentEditable || (el.tagName === 'BODY' && el.ownerDocument.designMode === 'on');
+  const localSaveSucceeded = (scope) =>
+    all('.save-status,[data-answer-save-status],.savebtndiv [role="status"]', scope).some(
+      (node) => visible(node) && /保存成功|已保存|暂存成功/.test(clean(node.innerText))
+    );
+  const fieldMatches = (el, value) => {
+    const normalize = (text) =>
+      clean(text)
+        .normalize('NFKC')
+        .replace(/[\u200b\ufeff]/g, '')
+        .replace(/\s+/g, ' ');
+    return normalize(fieldValue(el)) === normalize(value);
+  };
   function optionWrapper(node, isInput) {
     return isInput
       ? [...(node.labels || [])].find(visible) ||
@@ -235,7 +262,8 @@
       const text = clean(wrapper?.innerText || node.getAttribute('aria-label')).normalize('NFKC');
       const printed = text.match(/^([A-Z])(?:\s*[.、:：)）]|\n|$)/i)?.[1];
       const marker = clean(
-        wrapper?.querySelector('.num_option,.num_option_dx,[data-option-label]')?.textContent
+        wrapper?.querySelector('.num_option,.num_option_dx,[data-option-label],[name^="answer"]')
+          ?.textContent
       );
       return (
         printed ||
@@ -260,12 +288,22 @@
   }
   function optionText(node, isInput) {
     const wrapper = optionWrapper(node, isInput);
-    const raw = clean(
+    let raw = clean(
       wrapper?.innerText ||
         node.getAttribute?.('aria-label') ||
         (isInput && !/^(?:on|[A-Z])$/i.test(node.value || '') ? node.value : '')
-    ).replace(/^[A-Z]\s*[.、．:：)）]\s*/, '');
-    if (raw) return raw;
+    );
+    const marker = clean(
+      wrapper?.querySelector('.num_option,.num_option_dx,[data-option-label],[name^="answer"]')
+        ?.textContent
+    );
+    if (/^[A-Z]$/i.test(marker) && raw.startsWith(marker))
+      raw = raw
+        .slice(marker.length)
+        .trim()
+        .replace(/^[.、．:：)）]\s*/, '');
+    else raw = raw.replace(/^[A-Z]\s*[.、．:：)）]\s*/, '');
+    if (raw && !/^[A-Z]$/i.test(raw)) return raw;
     if (
       wrapper?.querySelector?.(
         '.u-icon-correct, .u-icon-right, .icon-right, [data-option-boolean="true"]'
@@ -278,7 +316,7 @@
       )
     )
       return '错误';
-    return '';
+    return raw;
   }
   function discoverPopupQuestions(existingRoots) {
     const found = [];
@@ -333,6 +371,7 @@
         '.TiMu, .question-item, .questionLi, [data-question]') +
       ', ' +
       videoQuizSelector +
+      ', .mark_item, .newTiMu, .singleQuesId' +
       (adapter ? ', ' + adapter.questionSelector : '');
     const explicitRoots = all(selector)
       .filter(visible)
@@ -341,6 +380,15 @@
     const heuristicRoots = adapter ? [] : discoverPopupQuestions(explicitRoots);
     const roots = [...explicitRoots, ...heuristicRoots];
     return roots.map((root) => {
+      const questionId = root.querySelector('input[name^="questionId"]')?.value;
+      const typeInput =
+        !adapter &&
+        (root.querySelector('input[id^="answertype"],input[name^="answertype"]') ||
+          (questionId && all('input', root).find((input) => input.name === 'type' + questionId)));
+      const typeCode = typeInput?.value?.trim();
+      const matchingSelector =
+        '.beautiSelect .thirdUlList select,.line-match select,[data-match-select]';
+      const matching = typeCode === '11' && !!root.querySelector(matchingSelector);
       const inVideoQuiz =
         heuristicRoots.includes(root) ||
         root.matches(videoQuizSelector) ||
@@ -351,22 +399,29 @@
         (adapter ? adapter.titleSelector + ',' : '') +
           '.Zy_TItle, .mark_name, .question-title, [data-question-title], .stem, .tkItem_title, .ans-videoquiz-title, .ans-videoquiz-stem, .video-quiz-title'
       );
-      const choices = all('input[type="radio"], input[type="checkbox"]', root).filter(
-        (input) =>
-          !input.disabled &&
-          visible(
-            input.closest('li, label, .answer-item, .tkItem_li, .ans-videoquiz-opt, div') || input
-          )
-      );
-      const customOptions = choices.length
+      const choices = matching
         ? []
-        : all(
-            (adapter ? adapter.optionSelector + ',' : '') +
-              '.Zy_ulTop li, .Zy_ulBottom li, .answerList li, .tkItem_ul li, .tkItem_li, .ans-videoquiz-opt, .ans-videoquiz ul li, [data-option], [role="radio"], [role="checkbox"]',
-            root
-          ).filter(visible);
+        : all('input[type="radio"], input[type="checkbox"]', root).filter(
+            (input) =>
+              !input.disabled &&
+              visible(
+                input.closest('li, label, .answer-item, .tkItem_li, .ans-videoquiz-opt, div') ||
+                  input
+              )
+          );
+      const candidates =
+        matching || choices.length
+          ? []
+          : all(
+              (adapter ? adapter.optionSelector + ',' : '') +
+                '.Zy_ulTop li, .Zy_ulBottom li, .answerList li, .tkItem_ul li, .tkItem_li, .mark_letter li, .mark_options li, .before-after, .before-after-checkbox, .answerBg, .ans-videoquiz-opt, .ans-videoquiz ul li, [data-option], [role="radio"], [role="checkbox"]',
+              root
+            ).filter(visible);
+      const customOptions = candidates.filter(
+        (node) => !candidates.some((other) => other !== node && other.contains(node))
+      );
       const labeledOptions =
-        choices.length || customOptions.length
+        matching || choices.length || customOptions.length
           ? []
           : all('li, label, div, p', root)
               .filter((el) => {
@@ -391,32 +446,88 @@
       const ordered = orderOptions(unorderedOptions, choices.length > 0);
       const optionNodes = ordered.nodes;
       const directFields = all(
-        'textarea, input[type="text"], input:not([type]), [contenteditable="true"]',
+        matching
+          ? matchingSelector
+          : 'textarea, input[type="text"], input:not([type]), [contenteditable]:not([contenteditable="false"])',
         root
-      ).filter((el) => visible(el) && !el.disabled && !el.readOnly);
-      const editorFrames = directFields.length
-        ? []
-        : all('iframe', root)
-            .filter(visible)
-            .map((frame) => {
-              try {
-                const body = frame.contentDocument?.body;
-                return body &&
-                  (body.isContentEditable || body.getAttribute('contenteditable') === 'true')
-                  ? body
-                  : null;
-              } catch {
-                return null;
-              }
-            })
-            .filter(Boolean);
-      const fields = directFields.length ? directFields : editorFrames;
+      ).filter(
+        (el) =>
+          (visible(el) ||
+            (matching && visible(el.closest('.beautiSelect,.line-match,[data-match-row]')))) &&
+          (matching || !el.disabled) &&
+          !el.readOnly &&
+          !el.closest(editorUi)
+      );
+      const editorFrames = all('iframe', root)
+        .filter(
+          (frame) =>
+            visible(frame) ||
+            localSaveSucceeded(frame.closest('.blankItemDiv,.Answer,.stem_answer') || root) ||
+            (savedEditorFields.get(root)?.generation === runGeneration &&
+              savedEditorFields
+                .get(root)
+                .fields.some(
+                  (field) => field.ownerDocument === frame.contentDocument && field.isConnected
+                ))
+        )
+        .map((frame) => {
+          try {
+            const body = frame.contentDocument?.body;
+            return body && richField(body) ? body : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      const fields = [...directFields, ...editorFrames].filter(
+        (el, index, nodes) =>
+          nodes.indexOf(el) === index && !nodes.some((other) => other !== el && other.contains(el))
+      );
+      fields.sort((a, b) => {
+        const anchor = (field) =>
+          field.ownerDocument === document ? field : field.ownerDocument.defaultView?.frameElement;
+        const first = anchor(a),
+          second = anchor(b);
+        if (!first || !second || first === second) return 0;
+        return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+      const stems = all('.B_stem > .order_answer,.line-stem,[data-match-stem]', root);
+      const slots = matching
+        ? fields.map((field, index) => ({
+            prompt: (() => {
+              const row = field.closest('li')?.cloneNode(true);
+              if (row)
+                all(
+                  'select,.chosen-single,.chosen-container,.chosen-drop,input,button',
+                  row
+                ).forEach((node) => node.remove());
+              return clean(stems[index]?.innerText || row?.textContent || String(index + 1)).slice(
+                0,
+                400
+              );
+            })(),
+            options: [...field.options]
+              .filter((option) => option.value && !option.disabled)
+              .map((option) => ({
+                value: option.value,
+                text: clean(option.textContent).slice(0, 500),
+              })),
+          }))
+        : undefined;
+      const slotIssue = slots?.some(
+        (slot) =>
+          !slot.options.length ||
+          slot.options.length > 26 ||
+          new Set(slot.options.map((option) => option.value)).size !== slot.options.length
+      )
+        ? '连线下拉选项尚未完整加载，无法确认每空的可选值。'
+        : '';
       let text;
       if (title) text = clean(title.innerText);
       else {
         const copy = root.cloneNode(true);
         all(
-          'input, textarea, button, label, .answerList, .Zy_ulTop, .Zy_ulBottom, .tkItem_ul, .ans-videoquiz-opts, .tkTopic_bottom, [data-option]',
+          'input, textarea, iframe, [contenteditable], .edui-editor, button, label, .answerList, .Zy_ulTop, .Zy_ulBottom, .tkItem_ul, .ans-videoquiz-opts, .tkTopic_bottom, [data-option]',
           copy
         ).forEach((el) => el.remove());
         all('li, div, p, span, a', copy).forEach((el) => {
@@ -446,8 +557,25 @@
           )?.innerText
         );
       const fullTitle = (typeHint ? typeHint + ' ' : '') + text;
+      const typeCodes = {
+        0: 'single',
+        1: 'multiple',
+        2: 'fill',
+        3: 'boolean',
+        4: 'text',
+        5: 'text',
+        6: 'text',
+        7: 'text',
+        8: 'text',
+        9: 'fill',
+        10: 'fill',
+        ...(matching ? { 11: 'fill' } : {}),
+      };
+      const unknownType =
+        typeInput && /^\d+$/.test(typeCode) && !Object.hasOwn(typeCodes, typeCode);
       let type =
-        /多选/.test(fullTitle) ||
+        (Object.hasOwn(typeCodes, typeCode) && typeCodes[typeCode]) ||
+        (/多选/.test(fullTitle) ||
         choices.some((el) => el.type === 'checkbox') ||
         !!root.querySelector('.num_option_dx')
           ? 'multiple'
@@ -459,11 +587,13 @@
               ? 'single'
               : /填空/.test(fullTitle) || fields.length > 1
                 ? 'fill'
-                : 'text';
+                : 'text');
       // Pure image questions need a vision path and must not be guessed from missing text.
       const visualNodes = all('img, canvas, svg, math', root).filter(
         (el) =>
           !el.closest('.keban-ignore') &&
+          !el.closest(editorUi) &&
+          !fields.some((field) => field.contains(el)) &&
           !/icon|check|right|wrong|radio|checkbox/i.test(
             String(el.className?.baseVal || el.className) + ' ' + (el.getAttribute('src') || '')
           )
@@ -487,6 +617,8 @@
             .join('|')
         : '';
       const supported =
+        !slotIssue &&
+        !unknownType &&
         !ordered.issue &&
         text.length >= 2 &&
         (!hasImages || current?.settings.useVision) &&
@@ -494,6 +626,18 @@
       const answered = optionNodes.length
         ? optionNodes.some(selectedOption)
         : fields.length > 0 && fields.every((el) => clean(fieldValue(el)));
+      const limits = root.cloneNode(true);
+      all('input,textarea,[contenteditable],iframe', limits).forEach((node) => node.remove());
+      const textMinimum = /(?:不少于|不低于|至少|最少)\s*([0-9,]+)\s*字/.exec(
+        clean(limits.textContent).normalize('NFKC')
+      );
+      const minLength =
+        type === 'text' && fields.length === 1
+          ? Math.max(
+              Number(fields[0].minLength) || 0,
+              Number(textMinimum?.[1]?.replace(/,/g, '')) || 0
+            )
+          : 0;
       return {
         root,
         text: text.slice(0, 10000),
@@ -501,19 +645,51 @@
         options,
         fields,
         optionNodes,
-        optionIssue: ordered.issue,
+        optionIssue: unknownType
+          ? `当前${{ 11: '连线题', 14: '完形填空', 15: '阅读组合题' }[typeCode] || '交互题型'}需要单独适配，暂不支持自动作答。`
+          : slotIssue || ordered.issue,
         supported,
         answered,
         inVideoQuiz,
         needsImage: hasImages,
         captureId,
         visualSignature,
+        ...(type === 'fill' && fields.length ? { blankCount: fields.length } : {}),
+        ...(slots ? { slots } : {}),
+        ...(minLength > 0 && minLength <= 20000 ? { minLength } : {}),
       };
     });
   }
+  async function writeEditorField(q, field, value, syncOnly = false) {
+    const generation = current.generation,
+      running = current.running;
+    const expected = fieldValue(field),
+      token = crypto.randomUUID();
+    field.setAttribute('data-keban-editor', token);
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const fresh = await send('KP_STATE');
+      if (fresh.generation !== generation || (running && !fresh.running) || !q.root.isConnected)
+        return false;
+      const result = await send('KP_EDITOR_WRITE', {
+        generation,
+        fieldToken: token,
+        value,
+        expected,
+        syncOnly,
+      });
+      if (result.changed || result.stopped) return false;
+      if (result.written) return true;
+      if (!result.retryable) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const reason = '文本编辑器尚未就绪或未同步提交内容，已保留页面作答。';
+    await send('KP_BLOCK', { reason });
+    throw new Error(reason);
+  }
   async function applyAnswer(q, answer, replaceRejected = false) {
     if (!q.root.isConnected || !q.supported || !answerReliable(answer)) return false;
-    if (q.answered && !replaceRejected) return matchesAnswer(q, answer);
+    if (q.answered && matchesAnswer(q, answer)) return true;
+    if (q.answered && !replaceRejected) return false;
     if (q.optionNodes.length) {
       const indexes = answer.answers.map((a) => a.charCodeAt(0) - 65);
       if (
@@ -524,64 +700,159 @@
       if (q.type !== 'multiple' && indexes.length !== 1) return false;
       const generation = current.generation;
       const running = current.running;
-      const settled = async () => {
-        await new Promise((resolve) => setTimeout(resolve, 180));
-        const fresh = await send('KP_STATE');
-        return fresh.generation === generation && (!running || fresh.running) && q.root.isConnected;
+      const originalKey = questionKey(q);
+      const refreshOptions = () => {
+        const questions = inspectQuestions();
+        let fresh = questions.find((candidate) => candidate.root === q.root);
+        if (!fresh && !q.root.isConnected) {
+          const matching = questions.filter((candidate) => questionKey(candidate) === originalKey);
+          if (matching.length === 1) fresh = matching[0];
+        }
+        if (!fresh?.supported || questionKey(fresh) !== originalKey) return false;
+        q.root = fresh.root;
+        q.optionNodes = fresh.optionNodes;
+        return true;
       };
-      for (const [index, node] of q.optionNodes.entries()) {
-        const want = indexes.includes(index);
-        // A single-choice click deselects its siblings. Never click them to clear them.
-        if (q.type !== 'multiple' && !want) continue;
-        const selected = selectedOption(node);
-        if (selected !== want) {
-          delete node.dataset.kebanSelected;
-          node.click();
-          if (!(await settled())) return false;
-          if (selectedOption(node) !== want && 'checked' in node) {
-            const wrapper =
-              node.labels?.[0] ||
-              node.closest('label, li, .tkItem_li, .ans-videoquiz-opt, .answer-item');
-            if (wrapper && wrapper !== node) {
-              wrapper.click();
-              if (!(await settled())) return false;
-            }
-          } else if (selectedOption(node) !== want && !('checked' in node)) {
-            const inner = node.querySelector(
-              'input[type="radio"], input[type="checkbox"], label, .num_option, .num_option_dx'
-            );
-            if (inner) {
-              inner.click();
-              if (!(await settled())) return false;
+      const inputGuard = new AbortController();
+      let userEdited = false;
+      for (const event of ['pointerdown', 'keydown'])
+        document.addEventListener(
+          event,
+          (event) => {
+            if (event.isTrusted && (!q.root.isConnected || q.root.contains(event.target)))
+              userEdited = true;
+          },
+          { capture: true, signal: inputGuard.signal }
+        );
+      const settled = async (index, want) => {
+        const started = Date.now();
+        let stableSince = 0;
+        let sawPending = false;
+        do {
+          await new Promise((resolve) => setTimeout(resolve, q.type === 'multiple' ? 60 : 180));
+          const fresh = await send('KP_STATE');
+          if (
+            userEdited ||
+            fresh.generation !== generation ||
+            (running && !fresh.running) ||
+            !refreshOptions()
+          )
+            return false;
+          const node = q.optionNodes[index];
+          const pendingSelector = '[aria-busy="true"],[data-saving="true"],.is-loading,.saving';
+          const pending = !!(node.closest(pendingSelector) || node.querySelector(pendingSelector));
+          sawPending ||= pending;
+          if (pending) {
+            stableSince = 0;
+            continue;
+          }
+          if (q.type !== 'multiple') return true;
+          if (selectedOption(q.optionNodes[index]) === want) {
+            stableSince ||= Date.now();
+            if (Date.now() - stableSince >= 180) return true;
+          } else stableSince = 0;
+        } while (Date.now() - started < (sawPending ? 15000 : 1200));
+        if (sawPending) {
+          const reason = '页面仍在保存选项，已停止补点，避免反向取消选择。';
+          await send('KP_BLOCK', { reason });
+          throw new Error(reason);
+        }
+        // Only try another target after the page has had time to apply this click.
+        return true;
+      };
+      try {
+        for (let recovery = 0; recovery < (replaceRejected ? 3 : 1); recovery++) {
+          if (userEdited) return false;
+          for (let index = 0; index < q.optionNodes.length; index++) {
+            if (!refreshOptions()) return false;
+            let node = q.optionNodes[index];
+            const want = indexes.includes(index);
+            // A single-choice click deselects its siblings. Never click them to clear them.
+            if (q.type !== 'multiple' && !want) continue;
+            const selected = selectedOption(node);
+            if (selected !== want) {
+              delete node.dataset.kebanSelected;
+              const target =
+                q.type === 'multiple' && !('checked' in node)
+                  ? node.querySelector('.num_option_dx,[name^="answercheck"]') || node
+                  : node;
+              const targetWasInner = target !== node;
+              target.click();
+              if (!(await settled(index, want))) return false;
+              node = q.optionNodes[index];
+              if (selectedOption(node) !== want && 'checked' in node) {
+                const wrapper =
+                  node.labels?.[0] ||
+                  node.closest('label, li, .tkItem_li, .ans-videoquiz-opt, .answer-item');
+                if (wrapper && wrapper !== node) {
+                  wrapper.click();
+                  if (!(await settled(index, want))) return false;
+                }
+              } else if (selectedOption(node) !== want && !('checked' in node)) {
+                const alternate = targetWasInner
+                  ? node
+                  : node.querySelector(
+                      'input[type="radio"], input[type="checkbox"], label, .num_option, .num_option_dx, [name^="answer"]'
+                    );
+                if (alternate) {
+                  alternate.click();
+                  if (!(await settled(index, want))) return false;
+                }
+              }
             }
           }
+          if (matchesAnswer(q, answer)) {
+            if (recovery)
+              await send('KP_LOG', { text: '已自动重试选项点击，并确认新答案已选中。' });
+            return true;
+          }
         }
+      } finally {
+        inputGuard.abort();
       }
       if (!matchesAnswer(q, answer)) {
-        const reason = `选项点击未通过核对：解析答案 ${answer.answers.join('、')}，页面实际选择 ${selectedAnswers(q).join('、') || '未确认'}。已停止提交，请检查页面控件。`;
+        const reason = `选项点击${replaceRejected ? '重试后仍' : ''}未通过核对：解析答案 ${answer.answers.join('、')}，页面实际选择 ${selectedAnswers(q).join('、') || '未确认'}。已停止提交，请检查页面控件。`;
         await send('KP_BLOCK', { reason });
         throw new Error(reason);
       }
       return true;
     }
     if (!q.fields.length || q.fields.length !== answer.answers.length) return false;
-    q.fields.forEach((field, index) => {
-      if (field.isContentEditable || field.getAttribute?.('contenteditable') === 'true')
-        field.textContent = answer.answers[index];
-      else {
+    const snapshots = q.fields.map(fieldValue);
+    for (const [index, field] of q.fields.entries()) {
+      if (!fieldMatches(field, snapshots[index])) return false;
+      if (fieldMatches(field, answer.answers[index])) continue;
+      if (field.tagName === 'SELECT') {
+        const token = crypto.randomUUID();
+        field.setAttribute('data-keban-select', token);
+        const result = await send('KP_SELECT_WRITE', {
+          generation: current.generation,
+          fieldToken: token,
+          value: answer.answers[index],
+          expected: snapshots[index],
+        });
+        if (result.changed) {
+          await send('KP_BLOCK', { reason: '填写期间下拉答案被修改，已保留页面选择。' });
+          return false;
+        }
+        if (!result.written) return false;
+        if (!(await waitSelectReady(field))) return false;
+      } else if (richField(field)) {
+        if (!(await writeEditorField(q, field, answer.answers[index]))) return false;
+      } else {
         const win = field.ownerDocument?.defaultView || window;
         const prototype =
           field.tagName === 'TEXTAREA'
             ? win.HTMLTextAreaElement.prototype
             : win.HTMLInputElement.prototype;
         Object.getOwnPropertyDescriptor(prototype, 'value').set.call(field, answer.answers[index]);
+        const Ev = field.ownerDocument?.defaultView?.Event || Event;
+        field.dispatchEvent(new Ev('input', { bubbles: true }));
+        field.dispatchEvent(new Ev('change', { bubbles: true }));
+        field.dispatchEvent(new Ev('blur', { bubbles: true }));
       }
-      const Ev = field.ownerDocument?.defaultView?.Event || Event;
-      field.dispatchEvent(new Ev('input', { bubbles: true }));
-      field.dispatchEvent(new Ev('change', { bubbles: true }));
-      field.dispatchEvent(new Ev('blur', { bubbles: true }));
-    });
-    return q.fields.every((el, i) => fieldValue(el) === answer.answers[i]);
+    }
+    return q.fields.every((el, i) => fieldMatches(el, answer.answers[i]));
   }
   function matchesAnswer(q, answer) {
     if (!answerReliable(answer)) return false;
@@ -593,8 +864,121 @@
     }
     return (
       q.fields.length === answer.answers.length &&
-      q.fields.every((el, i) => clean(fieldValue(el)) === clean(answer.answers[i]))
+      q.fields.every((el, i) => fieldMatches(el, answer.answers[i]))
     );
+  }
+  async function waitSelectReady(field) {
+    const generation = current.generation,
+      started = Date.now();
+    while (
+      field.disabled ||
+      field.closest('[aria-busy="true"],[data-saving="true"],.is-loading,.saving')
+    ) {
+      if (!field.isConnected) return false;
+      if (Date.now() - started > 15000) {
+        await send('KP_BLOCK', { reason: '下拉控件仍在保存，请等待页面响应后继续。' });
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const state = await send('KP_STATE');
+      if (!state.running || state.generation !== generation) return false;
+    }
+    return field.isConnected;
+  }
+  async function saveLocalAnswers(questions) {
+    const generation = current.generation;
+    for (const q of questions) {
+      if (!q.fields.length) continue;
+      for (const field of q.fields.filter((field) => field.tagName === 'SELECT'))
+        if (!(await waitSelectReady(field))) return false;
+      const key = questionKey(q),
+        answer = answers.get(key);
+      if (!matchesAnswer(q, answer)) return false;
+      const signature = answerSignature(selectedAnswers(q), q.type);
+      const buttons = all('.savebtndiv .saveButtonClass', q.root).filter(visible);
+      for (const button of buttons) {
+        const previous = localSaves.get(button);
+        if (
+          previous?.generation === generation &&
+          previous.key === key &&
+          previous.signature === signature
+        )
+          continue;
+        const scope = button.closest('.blankItemDiv,.Answer,.stem_answer') || button.parentElement;
+        const baseline = answerBaselines.get(key);
+        if (
+          button.disabled &&
+          localSaveSucceeded(scope) &&
+          baseline &&
+          q.fields.every((field, i) => fieldMatches(field, baseline[i]))
+        )
+          continue;
+        let complete = false;
+        for (let attempt = 0; attempt < 3 && !complete; attempt++) {
+          let retryable = false;
+          const fresh = await send('KP_STATE');
+          if (
+            !fresh.running ||
+            fresh.generation !== generation ||
+            !q.root.isConnected ||
+            !matchesAnswer(q, answer)
+          )
+            return false;
+          for (const field of q.fields.filter(richField))
+            if (!(await writeEditorField(q, field, fieldValue(field), true))) return false;
+          if (button.disabled || button.getAttribute('aria-disabled') === 'true') break;
+          button.click();
+          savedEditorFields.set(q.root, { generation, fields: q.fields.slice() });
+          const started = Date.now();
+          while (Date.now() - started < 10000) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            const state = await send('KP_STATE');
+            if (!state.running || state.generation !== generation) return false;
+            const currentQuestion = inspectQuestions().find((item) => item.root === q.root);
+            if (
+              !currentQuestion ||
+              questionKey(currentQuestion) !== key ||
+              !matchesAnswer(currentQuestion, answer)
+            ) {
+              await send('KP_BLOCK', { reason: '本题保存期间答案发生变化，已保留页面内容。' });
+              return false;
+            }
+            if (Date.now() - started < 300) continue;
+            const pending =
+              button.getAttribute('aria-busy') === 'true' ||
+              !!scope.querySelector('[aria-busy="true"],.saving,.is-loading');
+            if (pending) continue;
+            const error = all(
+              '.save-status,[data-answer-save-status],[role="status"],.error',
+              scope
+            ).some(
+              (node) => visible(node) && /保存失败|暂存失败|保存出错/.test(clean(node.innerText))
+            );
+            if (error) {
+              retryable = true;
+              break;
+            }
+            if (
+              localSaveSucceeded(scope) ||
+              /已保存|保存成功/.test(clean(button.innerText)) ||
+              !button.isConnected ||
+              !visible(button)
+            ) {
+              complete = true;
+              break;
+            }
+          }
+          if (!complete && !retryable) break;
+        }
+        if (!complete) {
+          await send('KP_BLOCK', { reason: '页面未确认本题保存，已停止整页提交并保留作答。' });
+          return false;
+        }
+        localSaves.set(button, { generation, key, signature });
+        await send('KP_LOG', { text: '已处理本题保存，正在继续后续作答。' });
+      }
+    }
+    return true;
   }
   function makeHud() {
     if (!topFrame || hud || !document.body) return;
@@ -602,7 +986,7 @@
     hud.id = 'keban-study-assistant';
     const shadow = hud.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
-    style.textContent = `:host{all:initial;position:fixed;z-index:2147483000;right:20px;bottom:20px;font:13px/1.6 "PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;color:#0f1f38;-webkit-font-smoothing:antialiased}*{box-sizing:border-box}section{width:324px;background:#fff;border:1px solid #d5e1f2;border-radius:14px;box-shadow:0 4px 12px rgba(15,31,56,.08),0 18px 38px -8px rgba(15,31,56,.18);overflow:hidden}header{display:flex;align-items:center;padding:12px 15px;background:linear-gradient(135deg,#17366e 0%,#1d4ed8 100%);color:#fff;gap:9px}strong{font-size:15px;font-weight:700;letter-spacing:.01em}span{font-size:11px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.22);padding:2px 9px;border-radius:999px;font-weight:500;margin-right:auto}button{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #c5d4e8;border-radius:8px;background:linear-gradient(180deg,#fff 0%,#f7fafd 100%);color:#1e3a6d;padding:6px 11px;box-shadow:0 1px 2px rgba(15,31,56,.04);transition:background .15s,border-color .15s}button:hover{background:#eef4fc;border-color:#98b4dc;color:#1d4ed8}header button{border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.12);color:#fff;font-size:15px;line-height:1;width:24px;height:24px;padding:0;border-radius:6px;display:grid;place-items:center;box-shadow:none}header button:hover{background:rgba(255,255,255,.24);border-color:rgba(255,255,255,.4);color:#fff}main{padding:14px 15px}main>p{margin:0 0 10px;padding:8px 11px;background:#f2f6fc;border:1px solid #dce6f5;border-left:3px solid #2563eb;border-radius:8px;font-size:12.5px;font-weight:500;color:#152945}pre{font:inherit;font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-word;max-height:235px;overflow:auto;margin:10px 0;padding:10px 11px;background:#f8fafd;border:1px solid #e1eaf5;border-radius:9px;color:#2c4260}pre:empty{display:none}footer{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}footer button{flex:1}button:focus-visible{outline:3px solid #85b6f6;outline-offset:2px}section.collapsed main{display:none}`;
+    style.textContent = `:host{all:initial;position:fixed;z-index:2147483000;right:20px;bottom:20px;font:13px/1.6 "PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;color:#f1f5f9;-webkit-font-smoothing:antialiased}*{box-sizing:border-box}section{width:332px;background:radial-gradient(240px 160px at 90% 0%,rgba(14,165,233,.24),transparent 70%),linear-gradient(160deg,#081226 0%,#0f2147 58%,#162f63 100%);border:1px solid #23468a;border-radius:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 8px 20px rgba(7,16,34,.28),0 24px 48px -10px rgba(7,16,34,.45);overflow:hidden}header{display:flex;align-items:center;padding:12px 15px;background:rgba(255,255,255,.04);border-bottom:1px solid rgba(148,163,184,.18);color:#fff;gap:9px}strong{font-size:15px;font-weight:800;letter-spacing:.01em}span{font-size:11px;background:rgba(56,189,248,.18);border:1px solid rgba(125,211,252,.35);color:#bae6fd;padding:2px 9px;border-radius:999px;font-weight:600;margin-right:auto}button{position:relative;overflow:hidden;font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:1px solid rgba(148,163,184,.28);border-radius:9px;background:linear-gradient(180deg,rgba(255,255,255,.14) 0%,rgba(255,255,255,.07) 100%);color:#f8fafc;padding:7px 12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),inset 0 -2px 0 rgba(0,0,0,.28);transition:background .18s,border-color .18s,color .18s,box-shadow .18s,transform .14s}button::after{content:"";position:absolute;top:-20%;bottom:-20%;left:0;width:45%;background:linear-gradient(112deg,transparent 15%,rgba(255,255,255,.28) 48%,rgba(255,255,255,.55) 50%,rgba(255,255,255,.28) 52%,transparent 85%);transform:translateX(-180%) skewX(-20deg);transition:transform .5s cubic-bezier(.22,1,.36,1);pointer-events:none}button:hover{background:linear-gradient(135deg,#2563eb 0%,#0ea5e9 100%);border-color:#60a5fa;color:#fff;transform:translateY(-1px);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 6px 14px -2px rgba(14,165,233,.38)}button:hover::after{transform:translateX(300%) skewX(-20deg)}button:active{transform:translateY(1px) scale(.985)}header button{border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;font-size:15px;line-height:1;width:24px;height:24px;padding:0;border-radius:7px;display:grid;place-items:center;box-shadow:none}header button:hover{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.4);color:#fff;transform:none;box-shadow:none}main{padding:14px 15px}main>p{margin:0 0 10px;padding:9px 12px;background:rgba(15,23,42,.58);border:1px solid rgba(96,165,250,.28);border-left:3.5px solid #38bdf8;border-radius:10px;font-size:12.5px;font-weight:500;color:#e2e8f0}pre{font:inherit;font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-word;max-height:235px;overflow:auto;margin:10px 0;padding:10px 12px;background:rgba(9,19,38,.62);border:1px solid rgba(148,163,184,.22);border-radius:10px;color:#cbd5e1}pre:empty{display:none}footer{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}footer button{flex:1}button:focus-visible{outline:3px solid #38bdf8;outline-offset:2px}section.collapsed main{display:none}`;
     const box = document.createElement('section');
     const header = document.createElement('header');
     const brand = document.createElement('strong');
@@ -622,13 +1006,13 @@
       hudCoursePicker = document.createElement('div');
       hudCoursePicker.hidden = true;
       hudCoursePicker.style.cssText =
-        'margin-bottom:10px;padding:10px;background:#f8fafd;border:1px solid #dce5f2;border-radius:9px';
+        'margin-bottom:10px;padding:10px;background:rgba(15,23,42,.55);border:1px solid rgba(148,163,184,.24);border-radius:10px';
       const label = document.createElement('label');
       label.textContent = '选择需要继续的MOOC课程';
-      label.style.cssText = 'display:block;font-size:12px;font-weight:600;color:#1e3a6d';
+      label.style.cssText = 'display:block;font-size:12px;font-weight:600;color:#bae6fd';
       hudCourseSelect = document.createElement('select');
       hudCourseSelect.style.cssText =
-        'width:100%;margin:7px 0 8px;padding:7px 9px;border:1px solid #c5d4e8;border-radius:7px;background:#fff;font:inherit;font-size:12.5px';
+        'width:100%;margin:7px 0 8px;padding:7px 9px;border:1px solid rgba(148,163,184,.32);border-radius:8px;background:#0f172a;color:#f8fafc;font:inherit;font-size:12.5px';
       const choose = document.createElement('button');
       choose.textContent = '选择课程';
       choose.onclick = () =>
@@ -657,14 +1041,11 @@
         showError(new Error('复制失败，请在插件窗口中查看解析。'));
       }
     };
-    const retry = document.createElement('button');
-    retry.textContent = '重试低分题';
-    retry.onclick = () => send('KP_RETRY_LOW').catch(showError);
     hudPending = document.createElement('div');
     hudPending.style.cssText =
-      'font-size:12px;color:#8d5329;margin:10px 0;padding:9px 11px;background:#fffbeb;border:1px solid #f5d89a;border-radius:9px;max-height:250px;overflow:auto';
+      'font-size:12px;color:#fde68a;margin:10px 0;padding:10px 12px;background:rgba(120,53,15,.42);border:1px solid rgba(251,191,36,.35);border-radius:10px;max-height:250px;overflow:auto';
     hudPending.hidden = true;
-    footer.append(stop, copy, retry);
+    footer.append(stop, copy);
     main.append(hudStatus, hudPending, hudAnswer, footer);
     box.append(header, main);
     shadow.append(style, box);
@@ -695,12 +1076,12 @@
     hudPending.append(title);
     for (const task of pending) {
       const row = document.createElement('div');
-      row.style.cssText = 'border-top:1px solid #e2e7ef;padding:9px 0';
+      row.style.cssText = 'border-top:1px solid rgba(251,191,36,.22);padding:9px 0';
       const label = document.createElement('div');
       label.textContent = (task.chapter ? task.chapter + ' · ' : '') + task.title;
       const reason = document.createElement('div');
       reason.textContent = task.reason;
-      reason.style.cssText = 'color:#607289;font-size:11px;margin:4px 0';
+      reason.style.cssText = 'color:#fcd34d;font-size:11px;margin:4px 0';
       const open = document.createElement('button');
       open.textContent = '前往处理';
       open.onclick = async () => {
@@ -774,8 +1155,20 @@
           : frameSelections.length === 1
             ? frameSelections[0].answers.join('、') || '未检测到选中项'
             : '当前页面无法核对';
-      const label = current && answerReliable(result) ? '解析答案' : '候选答案（未通过复核）';
-      hudAnswer.textContent = `${result.text}\n\n${label}：${result.answers.join('、') || '待确认'}\n页面当前选择：${actual}\n${result.validationIssue ? '结果校验：' + result.validationIssue : '模型自评：' + Math.round(result.confidence * 100) + '%'}\n${result.reviewIssue || result.review?.reason || ''}\n${(result.review?.stages || []).map((stage) => `${stage.model} · ${stage.label || stage.phase}：${stage.error || (stage.answers || []).join('、') + '（' + Math.round((stage.confidence || 0) * 100) + '%）'}`).join('\n')}\n\n${result.explanation}`;
+      const label =
+        current && answerReliable(result)
+          ? result.review?.status === 'best_effort'
+            ? '自动采用的候选答案'
+            : '解析答案'
+          : '候选答案（未通过复核）';
+      const rating =
+        result.review?.status === 'platform_inferred'
+          ? '依据：平台判错后的唯一剩余选项'
+          : result.validationIssue
+            ? (result.validationKind === 'confidence' ? '评分提示：' : '结果校验：') +
+              result.validationIssue
+            : '模型自评：' + Math.round(result.confidence * 100) + '%';
+      hudAnswer.textContent = `${result.text}\n\n${label}：${result.answers.join('、') || '待确认'}\n页面当前选择：${actual}\n${rating}\n${result.reviewIssue || result.review?.reason || ''}\n${(result.review?.stages || []).map((stage) => `${stage.model} · ${stage.label || stage.phase}：${stage.error || (stage.answers || []).join('、') + '（' + Math.round((stage.confidence || 0) * 100) + '%）'}`).join('\n')}\n\n${result.explanation}`;
     }
   }
   async function blockIfNeeded() {
@@ -783,11 +1176,13 @@
       '#captcha, #captchaWrap, .captcha, .yidun_popup, .geetest_panel, .nc-container, [data-study-captcha]'
     ).find(visible);
     const exam =
-      /\/(?:exam|exam-ans)\//i.test(location.pathname) ||
-      /(?:正在考试|考试剩余时间)/.test(document.title);
+      !current.settings.autoAssessments &&
+      (/\/(?:exam|exam-ans)\//i.test(location.pathname) ||
+        /(?:正在考试|考试剩余时间)/.test(document.title) ||
+        current.assessment);
     const login = all('input[type="password"]').some(visible);
     const commitment = all('.commitment-content-dialog').some(visible);
-    const platformReason = adapter?.blockReason();
+    const platformReason = adapter?.blockReason(current.settings);
     if (
       (captcha || exam || login || commitment || platformReason) &&
       (current.running || (current.manualUntil || 0) > Date.now()) &&
@@ -801,7 +1196,7 @@
             ? '登录已失效，请登录后重新开始。'
             : commitment
               ? '页面要求本人阅读并确认学习诚信承诺，请在课程页面处理。'
-              : platformReason || '当前是考试页面，托管已停止。',
+              : platformReason || '当前是考试或作业页面，已关闭自动处理。',
       });
       return true;
     }
@@ -981,6 +1376,7 @@
     return { catalog, index };
   }
   async function nextChapter() {
+    if (current.assessment && current.settings.autoAssessments) return;
     if (
       !topFrame ||
       !current.running ||
@@ -1330,15 +1726,100 @@
   function isSubmissionConfirmed() {
     if (adapter?.isComplete()) return true;
     const notifications = all(
-      '[role="status"], .ans-submit-success, .submit-success, .success-message, [data-study-submitted], .workFinishTip, .testTit_status_complete'
+      '[role="status"], .ans-submit-success, .submit-success, .success-message, [data-study-submitted], .workFinishTip, .testTit_status_complete, .work-status, .exam-status, [data-assessment-complete]'
     );
     return notifications.some(
       (el) =>
         visible(el) &&
         (el.hasAttribute('data-study-submitted') ||
-          /提交成功|已提交|作业已完成/.test(clean(el.innerText)) ||
+          /提交成功|已提交|作业已完成|交卷成功|考试已完成|已批阅/.test(clean(el.innerText)) ||
           (el.matches('.testTit_status_complete') && clean(el.innerText) === '已完成'))
     );
+  }
+  async function assessmentStep(questions) {
+    if (!current.running || !current.settings.autoAssessments || !current.assessment) return false;
+    const controls = all(
+      'button,a,input[type=button],input[type=submit],[role=button],span[onclick],div[onclick]'
+    ).filter(
+      (node) =>
+        visible(node) &&
+        !node.closest('#keban-study-assistant') &&
+        !node.disabled &&
+        !node.matches('.disabled,.disable,[aria-disabled=true]')
+    );
+    if (isSubmissionConfirmed()) {
+      const result = await send('KP_ASSESSMENT_DONE', { generation: current.generation });
+      if (result.completed) {
+        current = await send('KP_STATE');
+        if (hudStatus)
+          hudStatus.textContent =
+            current.assessment === 'exam' ? '本次考试已交卷。' : '本次作业已提交。';
+      }
+      return true;
+    }
+    let target, action;
+    if (!questions.length && !current.submission) {
+      const entries = controls.filter((node) =>
+        /^(开始考试|进入考试|继续考试|开始作答|继续作答|开始答题|开始作业|进入作业)$/.test(
+          clean(node.innerText || node.value)
+        )
+      );
+      if (entries.length === 1) {
+        target = entries[0];
+        action = '进入答题页';
+      } else {
+        if (hudStatus)
+          hudStatus.textContent =
+            entries.length > 1 ? '请选择本次要处理的考试或作业。' : '正在等待考试或作业题目加载。';
+        await checkStall('考试或作业题目尚未加载。');
+        return true;
+      }
+    } else if (
+      current.settings.autoSubmit &&
+      !current.submission &&
+      questions.length &&
+      questions.every((q) => matchesAnswer(q, answers.get(questionKey(q))))
+    ) {
+      target = controls.find((node) =>
+        /^(下一题|下一小题|下一页|保存并下一题)$/.test(clean(node.innerText || node.value))
+      );
+      action = '进入下一题';
+    }
+    if (!target) return false;
+    const signature = JSON.stringify([
+      action,
+      questions.map((q) => [q.captureId, questionKey(q), selectedAnswers(q)]),
+    ]);
+    if (assessmentMove?.signature === signature) {
+      if (Date.now() - assessmentMove.time < 3000) return true;
+      if (assessmentMove.attempts >= 3) {
+        await send('KP_BLOCK', { reason: '考试或作业页面切换未响应，已保留当前作答。' });
+        return true;
+      }
+    } else assessmentMove = { signature, attempts: 0, time: 0 };
+    const fresh = await send('KP_STATE');
+    if (
+      !fresh.running ||
+      fresh.generation !== current.generation ||
+      !target.isConnected ||
+      !visible(target)
+    )
+      return true;
+    if (
+      questions.length &&
+      inspectQuestions().some((q) => !matchesAnswer(q, answers.get(questionKey(q))))
+    )
+      return true;
+    assessmentMove.attempts++;
+    assessmentMove.time = Date.now();
+    target.click();
+    await send('KP_LOG', {
+      text:
+        action === '进入下一题'
+          ? '本页作答已核对，正在进入下一题。'
+          : '正在进入已打开的考试或作业答题页。',
+    });
+    return true;
   }
   async function confirmSubmission() {
     if (
@@ -1354,12 +1835,16 @@
       (el) =>
         visible(el) &&
         /提交|交卷/.test(clean(el.innerText)) &&
-        !/考试|未作答|未答题|删除|支付|验证码/.test(clean(el.innerText))
+        (current.assessment || !/考试/.test(clean(el.innerText))) &&
+        !/未作答|未答题|删除|支付|验证码/.test(clean(el.innerText))
     );
     if (!dialog) return false;
     const button = all('button,a,input[type="button"],[role="button"]', dialog).find(
       (el) =>
-        visible(el) && /^(确认提交|确定提交|确定|确认|提交)$/.test(clean(el.innerText || el.value))
+        visible(el) &&
+        (/^(确认提交|确定提交|确定|确认|提交)$/.test(clean(el.innerText || el.value)) ||
+          (current.assessment &&
+            /^(确认交卷|确定交卷|交卷|提交试卷)$/.test(clean(el.innerText || el.value))))
     );
     if (!button) return false;
     const claim = await send('KP_CLAIM_SUBMIT', {
@@ -1604,6 +2089,7 @@
       ]);
       if (context !== answerContext) {
         answers.clear();
+        answerBaselines.clear();
         attempts.clear();
         answerContext = context;
       }
@@ -1615,6 +2101,9 @@
         submitted.clear();
         lastSubmitted = null;
         corrections.clear();
+        answerBaselines.clear();
+        pageCorrection = null;
+        assessmentMove = null;
         advanced = false;
         navigationAttempts = 0;
         navigationAt = 0;
@@ -1630,14 +2119,24 @@
       makeHud();
       renderPending();
       if (lastResult) displayResult(lastResult);
-      if (hudBadge) hudBadge.textContent = current.running ? '托管中' : '已停止';
+      if (hudBadge)
+        hudBadge.textContent = current.running
+          ? '托管中'
+          : current.completed && current.assessmentCompleted
+            ? '已完成'
+            : '已停止';
       if (current.blocked && hudStatus) hudStatus.textContent = current.blocked;
       if (await blockIfNeeded()) return;
       await adapter?.observe?.({ state: current, send, setCourses });
-      const reviewStatus = await adapter?.review?.({ state: current, send, setCourses });
+      const assessmentActive = current.settings.autoAssessments && current.assessment;
+      const reviewStatus = assessmentActive
+        ? null
+        : await adapter?.review?.({ state: current, send, setCourses });
       const platformStatus = reviewStatus?.handled
         ? reviewStatus
-        : await adapter?.run({ state: current, send, setCourses });
+        : assessmentActive
+          ? null
+          : await adapter?.run({ state: current, send, setCourses });
       if (platformStatus?.handled) {
         if (hudStatus && platformStatus.waiting) hudStatus.textContent = platformStatus.waiting;
         await send('KP_REPORT', {
@@ -1705,8 +2204,38 @@
       if (hudStatus && !current.blocked)
         hudStatus.textContent = current.running
           ? courseStatus(videoReport)
-          : '托管已停止，可在工具栏查看状态。';
+          : current.completed && current.assessmentCompleted
+            ? current.assessmentCompleted === 'exam'
+              ? '本次考试已交卷。'
+              : '本次作业已提交。'
+            : '托管已停止，可在工具栏查看状态。';
       const shouldSolve = (current.running && current.settings.autoSolve) || manual;
+      const pageErrors = wrongFeedbackSignals();
+      if (
+        shouldSolve &&
+        current.running &&
+        !lastSubmitted &&
+        !current.submission &&
+        pageErrors.nodes.length &&
+        !pageCorrection
+      ) {
+        pageCorrection = {
+          generation: current.generation,
+          feedback: pageErrors.signature,
+          selections: new Map(questions.map((q) => [questionKey(q), selectedAnswers(q)])),
+        };
+        for (const q of questions) {
+          const key = questionKey(q);
+          answers.delete(key);
+          attempts.delete(key);
+          retryAfter.delete(key);
+        }
+      }
+      const pageCorrectionCurrent = () =>
+        pageCorrection?.generation === current.generation &&
+        pageCorrection.feedback === wrongFeedbackSignals().signature &&
+        pageCorrection.selections.size === questions.length &&
+        questions.every((q) => pageCorrection.selections.has(questionKey(q)));
       let filled = 0;
       for (let q of questions) {
         if (!current.running && !manual && !fillOnce) break;
@@ -1715,9 +2244,12 @@
           return;
         }
         const key = questionKey(q);
+        if (!answerBaselines.has(key)) answerBaselines.set(key, selectedAnswers(q));
         const questionId = await questionDigest(q);
         const feedback = current.answerFeedback?.find((entry) => entry.questionId === questionId);
-        const previousAnswer = corrections.get(key) || feedback?.previous;
+        const rejectedPrevious = corrections.get(key) || feedback?.previous;
+        const pagePrevious = pageCorrectionCurrent() ? pageCorrection.selections.get(key) : null;
+        const previousAnswer = rejectedPrevious || pagePrevious;
         const correctionPending =
           previousAnswer &&
           answerSignature(selectedAnswers(q), q.type) === answerSignature(previousAnswer, q.type);
@@ -1726,12 +2258,13 @@
           attempts.delete(key);
           retryAfter.delete(key);
         }
-        const retryKnownLow =
+        const needsReparse =
           shouldSolve &&
           (manual || newRun) &&
           answers.has(key) &&
-          !answerReliable(answers.get(key));
-        if (retryKnownLow) {
+          (!answerReliable(answers.get(key)) ||
+            (manual && answers.get(key).review?.status === 'best_effort'));
+        if (needsReparse) {
           answers.delete(key);
           attempts.delete(key);
           retryAfter.delete(key);
@@ -1740,9 +2273,9 @@
         // preserve the existing fields while checking them before submission.
         if (
           q.answered &&
-          !retryKnownLow &&
+          !needsReparse &&
           !correctionPending &&
-          (!current.running || !current.settings.autoSubmit || answers.has(key))
+          (!current.running || !current.settings.autoSubmit)
         ) {
           filled++;
           continue;
@@ -1771,6 +2304,9 @@
                 needsImage: q.needsImage,
                 captureId: q.captureId,
                 visualSignature: q.visualSignature,
+                minLength: q.minLength,
+                blankCount: q.blankCount,
+                slots: q.slots,
               },
               generation,
             });
@@ -1797,9 +2333,31 @@
         }
         const answer = answers.get(key);
         if (answer && ((current.running && current.settings.autoFill) || fillOnce)) {
+          const baseline = answerBaselines.get(key);
+          if (
+            !q.optionNodes.length &&
+            baseline?.length === q.fields.length &&
+            q.fields.some(
+              (field, i) =>
+                !fieldMatches(field, baseline[i]) &&
+                !fieldMatches(field, answer.answers[i]) &&
+                !(previousAnswer && fieldMatches(field, previousAnswer[i]))
+            )
+          ) {
+            await send('KP_BLOCK', { reason: '模型处理期间你修改了部分答案，已保留当前作答。' });
+            return;
+          }
           const replaceRejected =
-            previousAnswer &&
-            answerSignature(selectedAnswers(q), q.type) === answerSignature(previousAnswer, q.type);
+            (current.running &&
+              answerBaselines.has(key) &&
+              answerSignature(selectedAnswers(q), q.type) ===
+                answerSignature(answerBaselines.get(key), q.type)) ||
+            (previousAnswer &&
+              (rejectedPrevious ||
+                (pageCorrectionCurrent() &&
+                  ['assisted', 'adjudicated', 'best_effort'].includes(answer.review?.status))) &&
+              answerSignature(selectedAnswers(q), q.type) ===
+                answerSignature(previousAnswer, q.type));
           if (await applyAnswer(q, answer, !!replaceRejected)) {
             filled++;
             await send('KP_LOG', { text: `已填写：${q.text.slice(0, 45)}` });
@@ -1817,14 +2375,14 @@
           answers.has(questionKey(q)) &&
           !matchesAnswer(q, answers.get(questionKey(q)))
       )
-        ? '已有答案与模型解析不一致或把握不足，请复核后继续。'
+        ? '当前页面作答未通过提交核对，请查看具体原因。'
         : questions.some(
               (q) =>
                 !q.answered &&
                 answers.has(questionKey(q)) &&
                 !answerReliable(answers.get(questionKey(q)))
             )
-          ? '有题目未达到自动填写阈值，请复核后继续。'
+          ? '模型尚未返回符合题型或字数要求的有效答案。'
           : '';
       submissionConfirmed = submissionConfirmed || isSubmissionConfirmed();
       await send('KP_REPORT', {
@@ -1872,7 +2430,6 @@
             answer.reviewIssue,
             answer.validationIssue,
             answer.uncertain ? '模型标记不确定' : '',
-            `自评 ${Math.round(answer.confidence * 1000) / 10}%，阈值 ${Math.round(current.settings.minConfidence * 100)}%`,
           ]
             .filter(Boolean)
             .join('；');
@@ -1880,11 +2437,21 @@
         });
         await send('KP_BLOCK', {
           reason: details.length
-            ? `${reviewReason}${details.slice(0, 3).join('；')}。可点击“重试低分题”重新解析。`
+            ? `${reviewReason}${details.slice(0, 3).join('；')}。`
             : reviewReason,
         });
         return;
       }
+      if (
+        current.running &&
+        current.settings.autoSubmit &&
+        questions.length &&
+        questions.every((q) => matchesAnswer(q, answers.get(questionKey(q))))
+      ) {
+        if (!(await saveLocalAnswers(questions))) return;
+        questions = inspectQuestions();
+      }
+      if (await assessmentStep(questions)) return;
       const inVideoQuiz = questions.some((q) => q.inVideoQuiz);
       if (
         current.running &&
@@ -1899,12 +2466,15 @@
         // Confirm only the dialog produced by this explicit exercise submission.
         const submitSelector =
           'button, a, input[type="button"], input[type="submit"], [role="button"], .tkTopic_btn, .tkTopic_sub, .ans-videoquiz-submit, #videoquiz-submit, .j-submit, span, div';
+        const submitText = (value) =>
+          /^(提交|提交答案|提交作业|确定提交)$/.test(value) ||
+          (current.assessment && /^(交卷|提交试卷|提交考试)$/.test(value));
         const isSubmitBtn = (el) =>
           visible(el) &&
           !el.closest('#keban-study-assistant') &&
-          /^(提交|提交答案|提交作业|确定提交)$/.test(clean(el.innerText || el.value)) &&
+          submitText(clean(el.innerText || el.value)) &&
           !all('button, a, span, div', el).some(
-            (c) => visible(c) && /^(提交|提交答案|提交作业|确定提交)$/.test(clean(c.innerText))
+            (c) => visible(c) && submitText(clean(c.innerText))
           );
         const button =
           questions.map((q) => all(submitSelector, q.root).find(isSubmitBtn)).find(Boolean) ||
@@ -1916,7 +2486,22 @@
           const verified = ids.some((id) =>
             current.answerFeedback?.some((entry) => entry.questionId === id && entry.count > 0)
           );
-          if (!verified) {
+          const revised =
+            pageCorrectionCurrent() &&
+            questions.every((q) => {
+              const answer = answers.get(questionKey(q));
+              return (
+                answerReliable(answer) &&
+                matchesAnswer(q, answer) &&
+                ['assisted', 'adjudicated', 'best_effort'].includes(answer.review?.status)
+              );
+            }) &&
+            questions.some(
+              (q) =>
+                answerSignature(selectedAnswers(q), q.type) !==
+                answerSignature(pageCorrection.selections.get(questionKey(q)), q.type)
+            );
+          if (!verified && !revised) {
             await send('KP_BLOCK', {
               reason:
                 '页面已有错误提示，但对应的提交记录不明。已阻止原样重交；请核对已有作答或重新打开题目后继续。',
@@ -1936,6 +2521,23 @@
             await send('KP_BLOCK', { reason: '练习提交三次后仍未出现完成状态，请检查平台提示。' });
             return;
           }
+          if (questions.some((q) => q.fields.some(richField))) {
+            for (const q of questions)
+              for (const field of q.fields.filter(richField))
+                if (!(await writeEditorField(q, field, fieldValue(field), true))) return;
+            if (isSubmissionConfirmed()) return;
+            const afterSync = inspectQuestions();
+            if (
+              JSON.stringify(afterSync.map((q) => [questionKey(q), selectedAnswers(q)])) !==
+                signature ||
+              !afterSync.every((q) => matchesAnswer(q, answers.get(questionKey(q))))
+            ) {
+              await send('KP_BLOCK', {
+                reason: '提交前正文发生变化，已保留页面内容，请核对后继续。',
+              });
+              return;
+            }
+          }
           const intent = await send('KP_SUBMIT_INTENT', {
             generation: current.generation,
             inVideo: inVideoQuiz,
@@ -1947,6 +2549,9 @@
                 needsImage: q.needsImage,
                 captureId: q.captureId,
                 visualSignature: q.visualSignature,
+                minLength: q.minLength,
+                blankCount: q.blankCount,
+                slots: q.slots,
               },
               answers: selectedAnswers(q),
             })),
@@ -2030,6 +2635,24 @@
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id) return;
+    if (
+      (message.type === 'KP_WAKE' || message.type === 'KP_SOLVE_PAGE') &&
+      typeof message.generation === 'number' &&
+      (message.generation !== current?.generation || message.fieldWritesAllowed === false)
+    ) {
+      const documents = [document];
+      for (let i = 0; i < documents.length && i < 32; i++) {
+        all('[data-keban-select],[data-keban-editor]', documents[i]).forEach((field) => {
+          field.removeAttribute('data-keban-select');
+          field.removeAttribute('data-keban-editor');
+        });
+        for (const frame of all('iframe', documents[i]))
+          try {
+            if (frame.contentDocument && !documents.includes(frame.contentDocument))
+              documents.push(frame.contentDocument);
+          } catch {}
+      }
+    }
     if (message.type === 'KP_RESULT') {
       makeHud();
       displayResult(message.result);
